@@ -1,0 +1,234 @@
+from PyQt5.QtWidgets import (
+    QApplication, QWidget, QLabel, QLineEdit, QPushButton, QVBoxLayout, QHBoxLayout, QMessageBox, QFrame
+)
+from PyQt5.QtCore import Qt
+import sqlite3
+import hashlib
+import sys
+
+# === Database Setup ===
+def init_db():
+    conn = sqlite3.connect("medical_system.db")
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS Users (
+        user_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        username TEXT UNIQUE NOT NULL,
+        password TEXT NOT NULL,
+        role TEXT CHECK(role IN ('admin', 'product_owner', 'tester')) NOT NULL
+    )''')
+
+    try:
+        c.execute("INSERT INTO Users (username, password, role) VALUES (?, ?, ?)",
+                  ("admin1", hash_password("admin123"), "admin"))
+        c.execute("INSERT INTO Users (username, password, role) VALUES (?, ?, ?)",
+                  ("owner1", hash_password("owner123"), "product_owner"))
+        c.execute("INSERT INTO Users (username, password, role) VALUES (?, ?, ?)",
+                  ("tester1", hash_password("tester123"), "tester"))
+    except sqlite3.IntegrityError:
+        pass
+
+    conn.commit()
+    conn.close()
+
+# === Hash Password ===
+def hash_password(password):
+    return hashlib.sha256(password.encode()).hexdigest()
+
+# === Admin Dashboard ===
+class AdminWindow(QWidget):
+    def __init__(self, username):
+        super().__init__()
+        self.setWindowTitle("Admin Dashboard")
+        self.showMaximized()
+        self.setObjectName("AdminWindow")
+
+        self.setStyleSheet("""
+            #AdminWindow {
+                background-color: #f0f0f0;
+            }
+            QLabel {
+                font-size: 28px;
+                color: #333;
+            }
+        """)
+
+        layout = QVBoxLayout()
+        label = QLabel(f"Welcome, {username} (Admin)")
+        label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(label)
+        self.setLayout(layout)
+
+# === Product Owner Dashboard ===
+class ProductOwnerWindow(QWidget):
+    def __init__(self, username):
+        super().__init__()
+        self.setWindowTitle("Product Owner Dashboard")
+        self.showMaximized()
+        self.setObjectName("ProductOwnerWindow")
+
+        self.setStyleSheet("""
+            #ProductOwnerWindow {
+                background-color: #e0f7fa;
+            }
+            QLabel {
+                font-size: 28px;
+                color: #00796b;
+            }
+        """)
+
+        layout = QVBoxLayout()
+        label = QLabel(f"Welcome, {username} (Product Owner)")
+        label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(label)
+        self.setLayout(layout)
+
+# === Tester Dashboard ===
+class TesterWindow(QWidget):
+    def __init__(self, username):
+        super().__init__()
+        self.setWindowTitle("Tester Dashboard")
+        self.showMaximized()
+        self.setObjectName("TesterWindow")
+
+        self.setStyleSheet("""
+            #TesterWindow {
+                background-color: #fce4ec;
+            }
+            QLabel {
+                font-size: 28px;
+                color: #c2185b;
+            }
+        """)
+
+        layout = QVBoxLayout()
+        label = QLabel(f"Welcome, {username} (Tester)")
+        label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(label)
+        self.setLayout(layout)
+
+# === Login Window ===
+class LoginWindow(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Medical System Login")
+        self.showMaximized()
+        self.setup_ui()
+
+    def setup_ui(self):
+        font = "Arial"
+
+        # === Background Image ===
+        self.setStyleSheet(
+            "background-image: url('se_background.jpg'); background-repeat: no-repeat; background-position: center;")
+
+        # === Form Container Frame ===
+        self.form_frame = QFrame()
+        self.form_frame.setStyleSheet(""" 
+            QFrame {
+                background-color: rgba(255, 255, 255, 180);  /* White with transparency */
+                border-radius: 15px;
+            }
+        """)
+        self.form_frame.setFixedSize(400, 400)
+
+        # === Username ===
+        self.username_label = QLabel("Username")
+        self.username_label.setStyleSheet("font-size: 22px;")
+        self.username_input = QLineEdit()
+        self.username_input.setFixedWidth(300)
+        self.username_input.setStyleSheet("font-size: 18px; padding: 2px;")
+
+        username_layout = QVBoxLayout()
+        username_layout.addWidget(self.username_label, alignment=Qt.AlignCenter)
+        username_layout.addWidget(self.username_input, alignment=Qt.AlignCenter)
+
+        # === Password ===
+        self.password_label = QLabel("Password")
+        self.password_label.setStyleSheet("font-size: 22px;")
+        self.password_input = QLineEdit()
+        self.password_input.setEchoMode(QLineEdit.Password)
+        self.password_input.setFixedWidth(300)
+        self.password_input.setStyleSheet("font-size: 18px; padding: 2px;")
+
+        password_layout = QVBoxLayout()
+        password_layout.addWidget(self.password_label, alignment=Qt.AlignCenter)
+        password_layout.addWidget(self.password_input, alignment=Qt.AlignCenter)
+
+        # === Buttons ===
+        self.login_button = QPushButton("Login")
+        self.login_button.clicked.connect(self.login)
+        self.login_button.setStyleSheet(
+            "QPushButton { background-color: yellowgreen; color: black; font-size: 18px; } QPushButton:hover { background-color: yellow; }")
+        self.login_button.setFixedWidth(200)
+
+        self.exit_button = QPushButton("Exit")
+        self.exit_button.clicked.connect(self.exit_app)
+        self.exit_button.setStyleSheet("font-size: 18px;")
+        self.exit_button.setFixedWidth(200)
+
+        button_layout = QVBoxLayout()
+        button_layout.addSpacing(50)
+        button_layout.addWidget(self.login_button, alignment=Qt.AlignCenter)
+        button_layout.addSpacing(10)
+        button_layout.addWidget(self.exit_button, alignment=Qt.AlignCenter)
+
+        # === Inner Layout Inside Form Box ===
+        form_layout = QVBoxLayout()
+        form_layout.addStretch()
+        form_layout.addLayout(username_layout)
+        form_layout.addLayout(password_layout)
+        form_layout.addLayout(button_layout)
+        form_layout.addStretch()
+
+        self.form_frame.setLayout(form_layout)
+
+        # === Outer Layout (Center Everything) ===
+        main_layout = QVBoxLayout()
+        main_layout.addStretch()
+        main_layout.addWidget(self.form_frame, alignment=Qt.AlignCenter)
+        main_layout.addStretch()
+
+        self.setLayout(main_layout)
+
+    def login(self):
+        username = self.username_input.text()
+        password = self.password_input.text()
+        hashed_pw = hash_password(password)
+
+        conn = sqlite3.connect("medical_system.db")
+        c = conn.cursor()
+        c.execute("SELECT role FROM Users WHERE username=? AND password=?", (username, hashed_pw))
+        result = c.fetchone()
+        conn.close()
+
+        if result:
+            role = result[0]
+            QMessageBox.information(self, "Login Success", f"Welcome, {username}! Role: {role}")
+            self.close()
+
+            if role == "admin":
+                self.admin_window = AdminWindow(username)
+                self.admin_window.show()
+            elif role == "product_owner":
+                self.owner_window = ProductOwnerWindow(username)
+                self.owner_window.show()
+            elif role == "tester":
+                self.tester_window = TesterWindow(username)
+                self.tester_window.show()
+        else:
+            QMessageBox.critical(self, "Login Failed", "Invalid username or password")
+
+    def exit_app(self):
+        confirm = QMessageBox.question(self, "Exit Confirmation", "Are you sure you want to exit?",
+                                       QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if confirm == QMessageBox.Yes:
+            self.close()
+
+
+# === Run App ===
+if __name__ == '__main__':
+    init_db()
+    app = QApplication(sys.argv)
+    window = LoginWindow()
+    window.show()
+    sys.exit(app.exec_())
