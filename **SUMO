@@ -1,0 +1,282 @@
+import os
+import sys
+import subprocess
+import platform # To check OS type
+
+# --- Configuration ---
+SUMO_TEST_DIR = "sumo_test_files" # Directory to store generated files
+NET_FILE = os.path.join(SUMO_TEST_DIR, "test.net.xml")
+ROU_FILE = os.path.join(SUMO_TEST_DIR, "test.rou.xml")
+CFG_FILE = os.path.join(SUMO_TEST_DIR, "test.sumocfg")
+TRIP_FILE = os.path.join(SUMO_TEST_DIR, "test.trips.xml") # Intermediate file for routes
+
+# --- Check for SUMO_HOME ---
+print("Step 1: Checking for SUMO_HOME environment variable...")
+if 'SUMO_HOME' in os.environ:
+    SUMO_HOME = os.environ['SUMO_HOME']
+    print(f"  [INFO] SUMO_HOME found: {SUMO_HOME}")
+    # Add SUMO tools directory to Python path for traci import
+    tools = os.path.join(SUMO_HOME, 'tools')
+    if tools not in sys.path:
+        sys.path.append(tools)
+        print(f"  [INFO] Added '{tools}' to sys.path for traci import.")
+else:
+    print("  [ERROR] SUMO_HOME environment variable not set.")
+    print("          Please set SUMO_HOME environment variable to the root directory of your SUMO installation.")
+    print("          Example (Linux/macOS): export SUMO_HOME='/path/to/sumo'")
+    print("          Example (Windows): set SUMO_HOME=C:\\path\\to\\sumo")
+    sys.exit(1) # Exit if SUMO_HOME is not set
+
+# Determine SUMO executables based on OS
+if platform.system() == "Windows":
+    SUMO_CMD = os.path.join(SUMO_HOME, 'bin', 'sumo.exe')
+    NETCONVERT_CMD = os.path.join(SUMO_HOME, 'bin', 'netconvert.exe')
+    DUAROUTER_CMD = os.path.join(SUMO_HOME, 'bin', 'duarouter.exe')
+else: # Linux or macOS
+    SUMO_CMD = os.path.join(SUMO_HOME, 'bin', 'sumo')
+    NETCONVERT_CMD = os.path.join(SUMO_HOME, 'bin', 'netconvert')
+    DUAROUTER_CMD = os.path.join(SUMO_HOME, 'bin', 'duarouter')
+
+# --- Ensure Output Directory Exists ---
+print("\nStep 2: Ensuring output directory exists...")
+if not os.path.exists(SUMO_TEST_DIR):
+    os.makedirs(SUMO_TEST_DIR)
+    print(f"  [INFO] Created directory: {SUMO_TEST_DIR}")
+else:
+    print(f"  [INFO] Directory already exists: {SUMO_TEST_DIR}")
+
+
+# --- Create Node File (.nod.xml) ---
+# netconvert needs node and edge files as input
+print("\nStep 3: Creating node file (test.nod.xml)...")
+node_xml_content = """
+<nodes>
+    <node id="node1" x="0.0" y="0.0" />
+    <node id="node2" x="500.0" y="0.0" />
+</nodes>
+"""
+NOD_FILE = os.path.join(SUMO_TEST_DIR, "test.nod.xml")
+try:
+    with open(NOD_FILE, "w") as f:
+        f.write(node_xml_content.strip())
+    print(f"  [SUCCESS] Node file created: {NOD_FILE}")
+except IOError as e:
+    print(f"  [ERROR] Could not write node file: {e}")
+    sys.exit(1)
+
+# --- Create Edge File (.edg.xml) ---
+print("\nStep 4: Creating edge file (test.edg.xml)...")
+edge_xml_content = """
+<edges>
+    <edge id="edge1" from="node1" to="node2" priority="1" numLanes="1" speed="13.89" />
+</edges>
+"""
+EDG_FILE = os.path.join(SUMO_TEST_DIR, "test.edg.xml")
+try:
+    with open(EDG_FILE, "w") as f:
+        f.write(edge_xml_content.strip())
+    print(f"  [SUCCESS] Edge file created: {EDG_FILE}")
+except IOError as e:
+    print(f"  [ERROR] Could not write edge file: {e}")
+    sys.exit(1)
+
+# --- Generate Network File (.net.xml) using netconvert ---
+print("\nStep 5: Generating network file using netconvert...")
+netconvert_command = [
+    NETCONVERT_CMD,
+    f"--node-files={NOD_FILE}",
+    f"--edge-files={EDG_FILE}",
+    f"--output-file={NET_FILE}"
+]
+print(f"  [INFO] Running command: {' '.join(netconvert_command)}")
+try:
+    # Use shell=True on Windows if paths contain spaces and quoting is tricky
+    use_shell = platform.system() == "Windows"
+    process = subprocess.run(netconvert_command, check=True, capture_output=True, text=True, shell=use_shell)
+    print(f"  [INFO] netconvert stdout:\n{process.stdout}")
+    if process.stderr:
+         print(f"  [INFO] netconvert stderr:\n{process.stderr}") # Use INFO level as netconvert often prints warnings here
+    if os.path.exists(NET_FILE):
+        print(f"  [SUCCESS] Network file generated: {NET_FILE}")
+    else:
+        print(f"  [ERROR] netconvert ran but output file not found: {NET_FILE}")
+        sys.exit(1)
+except FileNotFoundError:
+    print(f"  [ERROR] netconvert command not found: {NETCONVERT_CMD}")
+    print("          Ensure SUMO_HOME is set correctly and SUMO is installed properly.")
+    sys.exit(1)
+except subprocess.CalledProcessError as e:
+    print(f"  [ERROR] netconvert failed with exit code {e.returncode}:")
+    print(f"  [ERROR] Command: {' '.join(e.cmd)}")
+    print(f"  [ERROR] Stderr:\n{e.stderr}")
+    print(f"  [ERROR] Stdout:\n{e.stdout}")
+    sys.exit(1)
+except Exception as e:
+     print(f"  [ERROR] An unexpected error occurred during netconvert execution: {e}")
+     sys.exit(1)
+
+
+# --- Create Trip File (.trips.xml) ---
+print("\nStep 6: Creating trip file (test.trips.xml)...")
+# Defines a single vehicle trip starting at time 0 from edge1 to edge1 (short trip)
+trip_xml_content = """
+<routes>
+    <vType id="car" accel="2.6" decel="4.5" sigma="0.5" length="5" maxSpeed="13.89" />
+    <trip id="trip0" type="car" depart="0" from="edge1" to="edge1" />
+</routes>
+"""
+try:
+    with open(TRIP_FILE, "w") as f:
+        f.write(trip_xml_content.strip())
+    print(f"  [SUCCESS] Trip file created: {TRIP_FILE}")
+except IOError as e:
+    print(f"  [ERROR] Could not write trip file: {e}")
+    sys.exit(1)
+
+# --- Generate Route File (.rou.xml) using duarouter ---
+print("\nStep 7: Generating route file using duarouter...")
+# Note: duarouter gives a warning about --trip-files being deprecated.
+# This is fine for this test, but for future work, consider generating routes differently
+# or using <trip> definitions directly in the .rou.xml if simple enough.
+duarouter_command = [
+    DUAROUTER_CMD,
+    f"--net-file={NET_FILE}",
+    f"--trip-files={TRIP_FILE}", # Deprecated, but works
+    f"--output-file={ROU_FILE}",
+    "--ignore-errors" # Useful for simple test cases
+]
+print(f"  [INFO] Running command: {' '.join(duarouter_command)}")
+try:
+    # Use shell=True on Windows if paths contain spaces and quoting is tricky
+    use_shell = platform.system() == "Windows"
+    process = subprocess.run(duarouter_command, check=True, capture_output=True, text=True, shell=use_shell)
+    print(f"  [INFO] duarouter stdout:\n{process.stdout}")
+    if process.stderr:
+         # Print stderr as INFO because the deprecation warning is expected
+         print(f"  [INFO] duarouter stderr:\n{process.stderr}")
+    if os.path.exists(ROU_FILE):
+        print(f"  [SUCCESS] Route file generated: {ROU_FILE}")
+    else:
+        print(f"  [ERROR] duarouter ran but output file not found: {ROU_FILE}")
+        sys.exit(1)
+except FileNotFoundError:
+    print(f"  [ERROR] duarouter command not found: {DUAROUTER_CMD}")
+    print("          Ensure SUMO_HOME is set correctly and SUMO is installed properly.")
+    sys.exit(1)
+except subprocess.CalledProcessError as e:
+    print(f"  [ERROR] duarouter failed with exit code {e.returncode}:")
+    print(f"  [ERROR] Command: {' '.join(e.cmd)}")
+    print(f"  [ERROR] Stderr:\n{e.stderr}")
+    print(f"  [ERROR] Stdout:\n{e.stdout}")
+    sys.exit(1)
+except Exception as e:
+     print(f"  [ERROR] An unexpected error occurred during duarouter execution: {e}")
+     sys.exit(1)
+
+
+# --- Create SUMO Configuration File (.sumocfg) ---
+print("\nStep 8: Creating SUMO configuration file (test.sumocfg)...")
+# Note: Using relative paths assuming the script is run from the parent directory of SUMO_TEST_DIR
+# CORRECTED: Changed '//' comment to XML comment ''
+# CORRECTED: Ensured proper closing tag for <processing>
+config_content = f"""
+<configuration>
+    <input>
+        <net-file value="{os.path.basename(NET_FILE)}"/>
+        <route-files value="{os.path.basename(ROU_FILE)}"/>
+    </input>
+    <time>
+        <begin value="0"/>
+        <end value="100"/> </time>
+    <processing>
+        <time-to-teleport value="-1"/>
+    </processing>
+    <report>
+        <verbose value="true"/>
+        <no-step-log value="true"/>
+    </report>
+</configuration>
+"""
+try:
+    with open(CFG_FILE, "w") as f:
+        f.write(config_content.strip())
+    print(f"  [SUCCESS] Configuration file created: {CFG_FILE}")
+except IOError as e:
+    print(f"  [ERROR] Could not write configuration file: {e}")
+    sys.exit(1)
+
+# --- Test TraCI Connection ---
+print("\nStep 9: Attempting to connect to SUMO using TraCI...")
+try:
+    import traci
+    print("  [INFO] Successfully imported traci.")
+
+    # Command to start SUMO with the configuration
+    # Use quotes around the config file path in case the test dir name has spaces
+    # Also use the absolute path for the config file for robustness
+    abs_cfg_file = os.path.abspath(CFG_FILE)
+    sumo_command = [SUMO_CMD, "-c", abs_cfg_file]
+    print(f"  [INFO] Starting SUMO with command: {' '.join(sumo_command)}")
+
+    # Start SUMO as a subprocess and connect with TraCI
+    # Pass the command list directly to traci.start()
+    traci.start(sumo_command)
+    print("  [SUCCESS] TraCI connected to SUMO.")
+
+    # Run a few simulation steps
+    num_steps = 5
+    print(f"  [INFO] Running {num_steps} simulation steps...")
+    for step in range(num_steps):
+        traci.simulationStep()
+        current_time = traci.simulation.getTime()
+        # Check if vehicle 'trip0' exists before trying to get its speed
+        if 'trip0' in traci.vehicle.getIDList():
+             speed = traci.vehicle.getSpeed('trip0')
+             print(f"    Step {step+1}, Sim Time: {current_time:.2f}s, Vehicle trip0 Speed: {speed:.2f} m/s")
+        else:
+             print(f"    Step {step+1}, Sim Time: {current_time:.2f}s, Vehicle trip0 has not departed or already arrived.")
+
+
+    print(f"  [SUCCESS] Ran {num_steps} simulation steps.")
+
+    # Close TraCI connection
+    traci.close()
+    print("  [SUCCESS] TraCI connection closed.")
+    # Add a check to see if SUMO process terminated cleanly
+    # Note: traci.start() manages the process, closing should terminate it.
+    # We might need a small delay to allow the process to exit.
+    import time
+    time.sleep(0.5) # Small delay
+    # This check is complex as traci manages the process; skip for simplicity unless needed
+
+except ImportError:
+    print("  [ERROR] Failed to import traci.")
+    print(f"          Ensure SUMO_HOME/tools is in your Python path (tried adding: {tools}).")
+    print("          Check your SUMO installation and SUMO_HOME setting.")
+    sys.exit(1)
+except FileNotFoundError:
+    print(f"  [ERROR] SUMO command not found: {SUMO_CMD}")
+    print("          Ensure SUMO_HOME is set correctly and SUMO is installed properly.")
+    sys.exit(1)
+except Exception as e:
+    print(f"  [ERROR] An error occurred during TraCI simulation: {e}")
+    # Attempt to close connection if it exists and an error occurred after connection
+    try:
+        # Check if a connection object exists (basic check, might need refinement)
+        if 'traci' in sys.modules and traci.isEmbedded(): # Check if traci was imported and potentially connected
+             traci.close()
+             print("  [INFO] Attempted to close TraCI connection after error.")
+        else:
+             print("  [INFO] TraCI connection likely not established or already closed.")
+
+    except Exception as close_e:
+        # Catch potential errors during the close attempt itself
+        print(f"  [WARN] Could not close TraCI connection after error: {close_e}")
+    sys.exit(1) # Exit after handling the TraCI error
+
+print("\n------------------------------------")
+print(" SUMO Connection Test Completed ")
+print("------------------------------------")
+print(f"Generated files are in: {os.path.abspath(SUMO_TEST_DIR)}")
+print("If all steps show [SUCCESS], your Python-SUMO connection is likely working.")
+
