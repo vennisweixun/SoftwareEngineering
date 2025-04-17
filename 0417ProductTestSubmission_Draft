@@ -1,0 +1,165 @@
+import sys
+import os
+import sqlite3
+from PyQt5.QtWidgets import (
+    QApplication, QWidget, QLabel, QLineEdit, QTextEdit, QPushButton,
+    QVBoxLayout, QHBoxLayout, QCheckBox, QFileDialog, QMessageBox, QScrollArea, QGroupBox
+)
+from PyQt5.QtCore import Qt
+
+class TestApp(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Medical Product Testing System")
+        self.setGeometry(300, 100, 700, 600)
+
+        self.current_product_id = ""
+        self.current_product_name = ""
+        self.test_checkboxes = {}
+        self.init_ui()
+
+    def init_ui(self):
+        layout = QVBoxLayout()
+
+        # Product ID or Name
+        self.product_input = QLineEdit()
+        self.product_input.setPlaceholderText("Enter Product ID or Product Name")
+        fetch_btn = QPushButton("Fetch Test Types")
+        fetch_btn.clicked.connect(self.fetch_tests)
+
+        layout.addWidget(QLabel("Product ID or Name:"))
+        layout.addWidget(self.product_input)
+        layout.addWidget(fetch_btn)
+
+        # Dynamic test checkboxes
+        self.test_group = QGroupBox("Test Types")
+        self.test_layout = QVBoxLayout()
+        self.test_group.setLayout(self.test_layout)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(self.test_group)
+        layout.addWidget(scroll)
+
+        # Tester Name
+        self.tester_name_input = QLineEdit()
+        self.tester_name_input.setPlaceholderText("Enter tester name")
+        layout.addWidget(QLabel("Tester Name:"))
+        layout.addWidget(self.tester_name_input)
+
+        # Comments
+        self.comments_input = QTextEdit()
+        self.comments_input.setPlaceholderText("Enter comments")
+        layout.addWidget(QLabel("Comments:"))
+        layout.addWidget(self.comments_input)
+
+        # Photo Upload
+        self.photo_path = QLineEdit()
+        self.photo_path.setReadOnly(True)
+        photo_btn = QPushButton("Upload Photo Proof")
+        photo_btn.clicked.connect(self.upload_photo)
+
+        layout.addWidget(QLabel("Photo Proof:"))
+        layout.addWidget(self.photo_path)
+        layout.addWidget(photo_btn)
+
+        # Buttons
+        button_layout = QHBoxLayout()
+        save_btn = QPushButton("Save Test Results")
+        save_btn.clicked.connect(self.save_results)
+
+        reset_btn = QPushButton("Reset")
+        reset_btn.clicked.connect(self.reset_form)
+
+        button_layout.addWidget(save_btn)
+        button_layout.addWidget(reset_btn)
+
+        layout.addLayout(button_layout)
+        self.setLayout(layout)
+
+    def fetch_tests(self):
+        product = self.product_input.text().strip()
+        if not product:
+            QMessageBox.warning(self, "Input Required", "Please enter a product ID or name.")
+            return
+
+        conn = sqlite3.connect("medical_system.db")
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT DISTINCT product_id, product_name, test_type
+            FROM product_tests
+            WHERE product_id = ? OR product_name = ?
+        """, (product, product))
+        rows = cur.fetchall()
+        conn.close()
+
+        self.clear_tests()
+
+        if not rows:
+            QMessageBox.information(self, "Not Found", "No tests found for this product.")
+            return
+
+        self.current_product_id = rows[0][0]
+        self.current_product_name = rows[0][1]
+
+        for _, _, test_type in rows:
+            cb = QCheckBox(test_type)
+            cb.setChecked(True)  # Default: Pass
+            self.test_checkboxes[test_type] = cb
+            self.test_layout.addWidget(cb)
+
+    def clear_tests(self):
+        for i in reversed(range(self.test_layout.count())):
+            widget = self.test_layout.itemAt(i).widget()
+            if widget:
+                widget.setParent(None)
+        self.test_checkboxes.clear()
+
+    def upload_photo(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Select Image", "", "Images (*.png *.jpg *.jpeg)")
+        if path:
+            self.photo_path.setText(path)
+
+    def save_results(self):
+        if not self.test_checkboxes:
+            QMessageBox.warning(self, "No Tests", "Fetch a product first.")
+            return
+
+        tester = self.tester_name_input.text().strip()
+        if not tester:
+            QMessageBox.warning(self, "Tester Missing", "Please enter the tester's name.")
+            return
+
+        comments = self.comments_input.toPlainText().strip()
+        photo = self.photo_path.text()
+
+        conn = sqlite3.connect("medical_system.db")
+        cur = conn.cursor()
+
+        for test_type, checkbox in self.test_checkboxes.items():
+            result = "Pass" if checkbox.isChecked() else "Fail"
+            cur.execute("""
+                INSERT INTO test_results (product_id, product_name, test_type, result, comments, photo_path, tester_name)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (
+                self.current_product_id, self.current_product_name, test_type, result,
+                comments, photo, tester
+            ))
+
+        conn.commit()
+        conn.close()
+        QMessageBox.information(self, "Success", "Test results saved successfully.")
+        self.reset_form()
+
+    def reset_form(self):
+        self.product_input.clear()
+        self.tester_name_input.clear()
+        self.comments_input.clear()
+        self.photo_path.clear()
+        self.clear_tests()
+
+if __name__ == '__main__':
+    app = QApplication(sys.argv)
+    window = TestApp()
+    window.show()
+    sys.exit(app.exec_())
