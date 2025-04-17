@@ -1,0 +1,494 @@
+from PyQt5.QtWidgets import (
+    QApplication, QWidget, QLabel, QLineEdit, QPushButton, QVBoxLayout, QHBoxLayout, QMessageBox, QFrame, QComboBox, QDialog, QGraphicsOpacityEffect, QCheckBox
+)
+from PyQt5.QtCore import Qt, QPropertyAnimation, QEasingCurve, pyqtProperty
+from PyQt5.QtGui import QFont, QPainter, QColor
+import sqlite3
+import hashlib
+import smtplib
+from email.mime.text import MIMEText
+import sys
+
+# === Database Setup ===
+def init_db():
+    conn = sqlite3.connect("medical_system.db")
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS Users (
+        user_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        username TEXT UNIQUE NOT NULL,
+        password TEXT NOT NULL,
+        role TEXT CHECK(role IN ('admin', 'product_owner', 'tester')) NOT NULL,
+        email TEXT,
+        phone_no TEXT
+    )''')
+
+    try:
+        c.execute("INSERT INTO Users (username, password, role, email) VALUES (?, ?, ?, ?)",
+                  ("admin1", hash_password("admin123"), "admin", "admin1@example.com"))
+        c.execute("INSERT INTO Users (username, password, role, email) VALUES (?, ?, ?, ?)",
+                  ("owner1", hash_password("owner123"), "product_owner", "owner1@example.com"))
+        c.execute("INSERT INTO Users (username, password, role, email) VALUES (?, ?, ?, ?)",
+                  ("tester1", hash_password("tester123"), "tester", "tester1@example.com"))
+    except sqlite3.IntegrityError:
+        pass
+
+    conn.commit()
+    conn.close()
+
+
+def alter_users_table():
+    conn = sqlite3.connect("medical_system.db")
+    c = conn.cursor()
+
+    try:
+        c.execute("ALTER TABLE Users ADD COLUMN email TEXT")
+    except sqlite3.OperationalError:
+        print("Column 'email' already exists.")
+
+    try:
+        c.execute("ALTER TABLE Users ADD COLUMN phone_no TEXT")
+    except sqlite3.OperationalError:
+        print("Column 'phone_no' already exists.")
+
+    conn.commit()
+    conn.close()
+
+
+# === Hash Password ===
+def hash_password(password):
+    return hashlib.sha256(password.encode()).hexdigest()
+
+# === Admin Dashboard ===
+class AdminWindow(QWidget):
+    def __init__(self, username):
+        super().__init__()
+        self.setWindowTitle("Admin Dashboard")
+        self.showMaximized()
+        self.setObjectName("AdminWindow")
+
+        self.setStyleSheet("""
+            #AdminWindow {
+                background-color: #f0f0f0;
+            }
+            QLabel {
+                font-size: 28px;
+                color: #333;
+            }
+        """)
+
+        # Layouts
+        main_layout = QVBoxLayout()
+        top_layout = QHBoxLayout()
+        content_layout = QVBoxLayout()
+
+        # Add Account Button
+        self.add_account_btn = QPushButton("Add New Account")
+        self.add_account_btn.setStyleSheet("font-size: 16px; padding: 8px;")
+        self.add_account_btn.clicked.connect(self.open_add_account_window)
+        top_layout.addWidget(self.add_account_btn, alignment=Qt.AlignLeft)
+
+        # Welcome Label
+        self.welcome_label = QLabel(f"Welcome, {username} (Admin)")
+        self.welcome_label.setAlignment(Qt.AlignCenter)
+        content_layout.addWidget(self.welcome_label)
+
+        # Combine layouts
+        main_layout.addLayout(top_layout)
+        main_layout.addLayout(content_layout)
+        self.setLayout(main_layout)
+
+    def open_add_account_window(self):
+        self.add_window = AddAccountWindow()
+        self.add_window.exec_()
+
+class ToggleSwitch(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(60, 30)
+        self._checked = False
+
+        self._circle_position = 3
+        self.animation = QPropertyAnimation(self, b"circle_position", self)
+        self.animation.setDuration(200)
+        self.animation.setEasingCurve(QEasingCurve.InOutQuad)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+
+        # Background
+        if self._checked:
+            painter.setBrush(QColor("#00c853"))  # Green
+        else:
+            painter.setBrush(QColor("#cfd8dc"))  # Grey
+
+        painter.setPen(Qt.NoPen)
+        painter.drawRoundedRect(0, 0, self.width(), self.height(), 15, 15)
+
+        # Circle
+        painter.setBrush(Qt.white)
+        painter.drawEllipse(int(self._circle_position), 3, 24, 24)
+
+    def mousePressEvent(self, event):
+        self.toggle()
+        super().mousePressEvent(event)
+
+    def toggle(self):
+        self.setChecked(not self._checked)
+
+    def isChecked(self):
+        return self._checked
+
+    def setChecked(self, state):
+        if self._checked != state:
+            self._checked = state
+            self.animate()
+
+    def animate(self):
+        start = self._circle_position
+        end = 33 if self._checked else 3
+        self.animation.stop()
+        self.animation.setStartValue(start)
+        self.animation.setEndValue(end)
+        self.animation.start()
+        self.update()
+
+    def get_circle_position(self):
+        return self._circle_position
+
+    def set_circle_position(self, pos):
+        self._circle_position = pos
+        self.update()
+
+    circle_position = pyqtProperty(int, fget=get_circle_position, fset=set_circle_position)
+
+
+class AddAccountWindow(QDialog):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Add New Account")
+        self.setWindowModality(Qt.ApplicationModal)
+        self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
+        self.setFixedSize(600, 500)
+        self.setup_ui()
+
+    def send_email_notification(self, to_email, username, password):
+        from_email = "venniscc04@gmail.com"
+        email_password = "pihi jdgo snyt ycxb"  # Consider using environment variables in production
+        subject = "Your Account Has Been Created"
+        body = f"Hello {username},\n\nYour account has been created.\nUsername: {username}\nPassword: {password}\n\nThank you."
+
+        msg = MIMEText(body)
+        msg["Subject"] = subject
+        msg["From"] = from_email
+        msg["To"] = to_email
+
+        try:
+            with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+                server.login(from_email, email_password)
+                server.send_message(msg)
+            print(f"Email sent to {to_email}")
+        except Exception as e:
+            print("Failed to send email:", e)
+
+    def setup_ui(self):
+        layout = QVBoxLayout()
+
+        self.title_label = QLabel("Create New Account")
+        font = QFont("Courier New", 26, QFont.Bold)  # "Courier New" is a common monospace font
+        self.title_label.setFont(font)
+        self.title_label.setStyleSheet("color: green;")
+        layout.addWidget(self.title_label, alignment=Qt.AlignCenter)
+
+        # Name row
+        name_layout = QHBoxLayout()
+        self.addname_label = QLabel("Name")
+        self.addname_label.setStyleSheet("font-size: 22px;")
+        self.addname_input = QLineEdit()
+        self.addname_input.setFixedWidth(350)
+        self.addname_input.setStyleSheet("font-size: 18px; padding: 2px;")
+
+        name_layout.addWidget(self.addname_label)
+        name_layout.addWidget(self.addname_input)
+        layout.addLayout(name_layout)
+
+        # Password row
+        password_layout = QHBoxLayout()
+        self.addpassword_label = QLabel("Password")
+        self.addpassword_label.setStyleSheet("font-size: 22px;")
+        self.addpassword_input = QLineEdit()
+        self.addpassword_input.setEchoMode(QLineEdit.Password)
+        self.addpassword_input.setFixedWidth(350)
+        self.addpassword_input.setStyleSheet("font-size: 18px; padding: 2px;")
+
+        password_layout.addWidget(self.addpassword_label)
+        password_layout.addWidget(self.addpassword_input)
+        layout.addLayout(password_layout)
+
+        # Role row
+        role_layout = QHBoxLayout()
+        self.addrole_label = QLabel("Role")
+        self.addrole_label.setStyleSheet("font-size: 22px;")
+        self.addrole_dropdown = QComboBox()
+        self.addrole_dropdown.addItems(["admin", "product_owner", "tester"])
+        self.addrole_dropdown.setFixedWidth(350)
+        self.addrole_dropdown.setStyleSheet("font-size: 18px;")
+
+        role_layout.addWidget(self.addrole_label)
+        role_layout.addWidget(self.addrole_dropdown)
+        layout.addLayout(role_layout)
+
+        #Email
+        email_layout = QHBoxLayout()
+        self.addemail_label = QLabel("Email")
+        self.addemail_label.setStyleSheet("font-size: 22px;")
+        self.addemail_input = QLineEdit()
+        self.addemail_input.setFixedWidth(350)
+        self.addemail_input.setStyleSheet("font-size: 18px; padding: 2px;")
+
+        email_layout.addWidget(self.addemail_label)
+        email_layout.addWidget(self.addemail_input)
+        layout.addLayout(email_layout)
+
+        # Toggle switch + label
+        self.toggle_switch = ToggleSwitch()
+        self.toggle_label = QLabel("Send email with username and password")
+        self.toggle_label.setStyleSheet("font-size: 18px;")
+
+        toggle_layout = QHBoxLayout()
+        toggle_layout.addWidget(self.toggle_switch)
+        toggle_layout.addWidget(self.toggle_label)
+        layout.addLayout(toggle_layout)
+
+        # Submit button
+        self.submit_button = QPushButton("Create Account")
+        self.submit_button.setStyleSheet("font-size: 18px; padding: 6px;")
+        self.submit_button.clicked.connect(self.create_account)
+        layout.addWidget(self.submit_button, alignment=Qt.AlignCenter)
+
+        self.setLayout(layout)
+
+    def create_account(self):
+        username = self.addname_input.text().strip()
+        password = self.addpassword_input.text()
+        role = self.addrole_dropdown.currentText()
+        email = self.addemail_input.text().strip()
+
+        if not username or not password:
+            QMessageBox.warning(self, "Input Error", "Name and password cannot be empty.")
+            return
+
+        if not email:
+            QMessageBox.warning(self, "Input Error", "Email cannot be empty.")
+            return
+
+        hashed_pw = hash_password(password)
+
+        if self.toggle_switch.isChecked():
+            # Send email logic here
+            print("Email will be sent to:", self.addemail_input.text())
+
+        try:
+            conn = sqlite3.connect("medical_system.db")
+            c = conn.cursor()
+            c.execute("INSERT INTO Users (username, password, role, email) VALUES (?, ?, ?, ?)",
+                      (username, hashed_pw, role, email))
+            conn.commit()
+            conn.close()
+
+            if self.toggle_switch.isChecked():
+                # Send email logic here
+                self.send_email_notification(email, username, password)
+
+            QMessageBox.information(self, "Success", "Account created successfully.")
+            self.close()
+        except sqlite3.IntegrityError:
+            QMessageBox.critical(self, "Error", "Username already exists.")
+
+
+# === Product Owner Dashboard ===
+class ProductOwnerWindow(QWidget):
+    def __init__(self, username):
+        super().__init__()
+        self.setWindowTitle("Product Owner Dashboard")
+        self.showMaximized()
+        self.setObjectName("ProductOwnerWindow")
+
+        self.setStyleSheet("""
+            #ProductOwnerWindow {
+                background-color: #e0f7fa;
+            }
+            QLabel {
+                font-size: 28px;
+                color: #00796b;
+            }
+        """)
+
+        layout = QVBoxLayout()
+        label = QLabel(f"Welcome, {username} (Product Owner)")
+        label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(label)
+        self.setLayout(layout)
+
+# === Tester Dashboard ===
+class TesterWindow(QWidget):
+    def __init__(self, username):
+        super().__init__()
+        self.setWindowTitle("Tester Dashboard")
+        self.showMaximized()
+        self.setObjectName("TesterWindow")
+
+        self.setStyleSheet("""
+            #TesterWindow {
+                background-color: #fce4ec;
+            }
+            QLabel {
+                font-size: 28px;
+                color: #c2185b;
+            }
+        """)
+
+        layout = QVBoxLayout()
+        label = QLabel(f"Welcome, {username} (Tester)")
+        label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(label)
+        self.setLayout(layout)
+
+# === Login Window ===
+class LoginWindow(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Medical System Login")
+        self.showMaximized()
+        self.setup_ui()
+
+    def setup_ui(self):
+        font = "Arial"
+
+        # === Background Image ===
+        self.setStyleSheet(
+            "background-image: url('se_background.jpg'); background-repeat: no-repeat; background-position: center;")
+
+        # === Form Container Frame ===
+        self.form_frame = QFrame()
+        self.form_frame.setStyleSheet(""" 
+            QFrame {
+                background-color: rgba(255, 255, 255, 180);  /* White with transparency */
+                border-radius: 15px;
+            }
+        """)
+        self.form_frame.setFixedSize(400, 400)
+
+        # === Username ===
+        self.username_label = QLabel("Username")
+        self.username_label.setStyleSheet("font-size: 22px;")
+        self.username_input = QLineEdit()
+        self.username_input.setFixedWidth(300)
+        self.username_input.setStyleSheet("font-size: 18px; padding: 2px;")
+
+        username_layout = QVBoxLayout()
+        username_layout.addWidget(self.username_label, alignment=Qt.AlignCenter)
+        username_layout.addWidget(self.username_input, alignment=Qt.AlignCenter)
+
+        # === Password ===
+        self.password_label = QLabel("Password")
+        self.password_label.setStyleSheet("font-size: 22px;")
+        self.password_input = QLineEdit()
+        self.password_input.setEchoMode(QLineEdit.Password)
+        self.password_input.setFixedWidth(300)
+        self.password_input.setStyleSheet("font-size: 18px; padding: 2px;")
+
+        password_layout = QVBoxLayout()
+        password_layout.addWidget(self.password_label, alignment=Qt.AlignCenter)
+        password_layout.addWidget(self.password_input, alignment=Qt.AlignCenter)
+
+        # === Buttons ===
+        self.login_button = QPushButton("Login")
+        self.login_button.clicked.connect(self.login)
+        self.login_button.setStyleSheet(
+            "QPushButton { background-color: yellowgreen; color: black; font-size: 18px; } QPushButton:hover { background-color: yellow; }")
+        self.login_button.setFixedWidth(200)
+
+        # Fade-in effect
+        self.opacity_effect = QGraphicsOpacityEffect()
+        self.login_button.setGraphicsEffect(self.opacity_effect)
+
+        self.fade_in = QPropertyAnimation(self.opacity_effect, b"opacity")
+        self.fade_in.setDuration(1000)
+        self.fade_in.setStartValue(0)
+        self.fade_in.setEndValue(1)
+        self.fade_in.start()
+
+        #Exit button
+        self.exit_button = QPushButton("Exit")
+        self.exit_button.clicked.connect(self.exit_app)
+        self.exit_button.setStyleSheet("font-size: 18px;")
+        self.exit_button.setFixedWidth(200)
+
+        button_layout = QVBoxLayout()
+        button_layout.addSpacing(50)
+        button_layout.addWidget(self.login_button, alignment=Qt.AlignCenter)
+        button_layout.addSpacing(10)
+        button_layout.addWidget(self.exit_button, alignment=Qt.AlignCenter)
+
+        # === Inner Layout Inside Form Box ===
+        form_layout = QVBoxLayout()
+        form_layout.addStretch()
+        form_layout.addLayout(username_layout)
+        form_layout.addLayout(password_layout)
+        form_layout.addLayout(button_layout)
+        form_layout.addStretch()
+
+        self.form_frame.setLayout(form_layout)
+
+        # === Outer Layout (Center Everything) ===
+        main_layout = QVBoxLayout()
+        main_layout.addStretch()
+        main_layout.addWidget(self.form_frame, alignment=Qt.AlignCenter)
+        main_layout.addStretch()
+
+        self.setLayout(main_layout)
+
+    def login(self):
+        username = self.username_input.text()
+        password = self.password_input.text()
+        hashed_pw = hash_password(password)
+
+        conn = sqlite3.connect("medical_system.db")
+        c = conn.cursor()
+        c.execute("SELECT role FROM Users WHERE username=? AND password=?", (username, hashed_pw))
+        result = c.fetchone()
+        conn.close()
+
+        if result:
+            role = result[0]
+            QMessageBox.information(self, "Login Success", f"Welcome, {username}! Role: {role}")
+            self.close()
+
+            if role == "admin":
+                self.admin_window = AdminWindow(username)
+                self.admin_window.show()
+            elif role == "product_owner":
+                self.owner_window = ProductOwnerWindow(username)
+                self.owner_window.show()
+            elif role == "tester":
+                self.tester_window = TesterWindow(username)
+                self.tester_window.show()
+        else:
+            QMessageBox.critical(self, "Login Failed", "Invalid username or password")
+
+    def exit_app(self):
+        confirm = QMessageBox.question(self, "Exit Confirmation", "Are you sure you want to exit?",
+                                       QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if confirm == QMessageBox.Yes:
+            self.close()
+
+
+# === Run App ===
+if __name__ == '__main__':
+    alter_users_table()
+    init_db()
+    app = QApplication(sys.argv)
+    window = LoginWindow()
+    window.show()
+    sys.exit(app.exec_())
