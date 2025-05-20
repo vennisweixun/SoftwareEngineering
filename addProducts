@@ -1,0 +1,561 @@
+import sys
+import sqlite3
+import barcode
+from barcode.writer import ImageWriter
+from PyQt5.QtWidgets import (
+    QApplication, QWidget, QLabel, QLineEdit, QTextEdit, QDateEdit,
+    QPushButton, QVBoxLayout, QHBoxLayout, QMessageBox, QScrollArea,
+    QFileDialog, QFrame
+)
+from PyQt5.QtCore import QDate, Qt
+import random
+import os
+from PyQt5.QtGui import QColor, QPixmap
+
+
+class AddProductWindow(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Add New Product")
+        self.showFullScreen()
+        self.init_ui()
+        self.setStyleSheet(self.stylesheet())
+
+    def init_ui(self):
+        # Main layout for the entire window
+        main_window_layout = QVBoxLayout(self) # Set this as the main layout for the QWidget
+        main_window_layout.setContentsMargins(40, 30, 40, 30) # Increased margins for better spacing
+        main_window_layout.setSpacing(20) # Increased spacing
+        
+        # Set the background color explicitly on the window itself
+        self.setAutoFillBackground(True)
+        palette = self.palette()
+        palette.setColor(self.backgroundRole(), QColor("#f3f3fe"))
+        self.setPalette(palette)
+        
+        # === Menu Bar ===
+        menu_bar_layout = QHBoxLayout()
+        menu_bar_layout.setContentsMargins(0, 0, 0, 15)
+        
+        # Back to Dashboard Button
+        self.back_btn = QPushButton("← Back to Dashboard")
+        self.back_btn.setFixedSize(200, 45)
+        self.back_btn.setObjectName("menu_button")
+        
+        # Logout Button
+        self.logout_btn = QPushButton("🚪 Log out")
+        self.logout_btn.setFixedSize(150, 45)
+        self.logout_btn.setObjectName("menu_button")
+        
+        # Add to menu bar with stretch to right-align logout button
+        menu_bar_layout.addWidget(self.back_btn, alignment=Qt.AlignLeft)
+        menu_bar_layout.addStretch()
+        menu_bar_layout.addWidget(self.logout_btn, alignment=Qt.AlignRight)
+        
+        # Add menu bar to main layout
+        main_window_layout.addLayout(menu_bar_layout)
+        
+        # Add a title
+        title_label = QLabel("Add New Product")
+        title_label.setObjectName("page_title")
+        title_label.setAlignment(Qt.AlignCenter)
+        main_window_layout.addWidget(title_label)
+
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setStyleSheet("QScrollArea { border: none; background-color: #f3f3fe; }")
+
+        content_widget = QWidget()
+        content_widget.setStyleSheet("background-color: #f3f3fe;")
+        form_layout = QVBoxLayout(content_widget)
+        form_layout.setContentsMargins(10, 10, 10, 20)
+        form_layout.setSpacing(18)
+
+        # --- Top section: Image Upload, Name, Description ---
+        top_section_layout = QHBoxLayout()
+        top_section_layout.setSpacing(25)
+
+        # Image upload section (Left)
+        image_upload_layout = QVBoxLayout()
+        image_upload_layout.setAlignment(Qt.AlignTop) # Align to top
+        
+        # Create a frame for the image preview that acts as the upload button
+        self.image_preview_frame = QFrame()
+        self.image_preview_frame.setFixedSize(250, 180) # Slightly wider than tall
+        self.image_preview_frame.setStyleSheet("border: 2px dashed #4CC9F0; border-radius: 12px; background-color: #f5f5fa;")
+        self.image_preview_frame.setCursor(Qt.PointingHandCursor)  # Change cursor to hand when hovering
+        self.image_preview_frame.setLayout(QVBoxLayout())
+        self.image_preview_frame.mousePressEvent = self.frame_click  # Make the frame clickable
+        
+        # Create a label to display the image
+        self.image_preview = QLabel("Upload Image")
+        self.image_preview.setAlignment(Qt.AlignCenter)
+        self.image_preview.setStyleSheet("border: none; background-color: transparent; font-size: 16px; color: #333;")
+        self.image_preview_frame.layout().addWidget(self.image_preview)
+        
+        # Create a horizontal layout for filename and upload another button
+        self.image_info_layout = QHBoxLayout()
+        
+        # Label for the image filename
+        self.image_name_label = QLabel("Image Name")
+        self.image_name_label.setStyleSheet("font-size: 14px; color: #333; margin-top: 8px;")
+        
+        # Secondary button for uploading another image (initially hidden)
+        self.upload_another_btn = QPushButton("Change Image")
+        self.upload_another_btn.setObjectName("upload_another_btn")
+        self.upload_another_btn.setFixedSize(150, 30)
+        self.upload_another_btn.clicked.connect(self.upload_image)
+        self.upload_another_btn.hide()  # Initially hidden
+        
+        self.image_info_layout.addWidget(self.image_name_label)
+        self.image_info_layout.addWidget(self.upload_another_btn)
+        self.image_info_layout.addStretch()
+        
+        # Add widgets to the layout
+        image_upload_layout.addWidget(self.image_preview_frame)
+        image_upload_layout.addLayout(self.image_info_layout)
+        image_upload_layout.addStretch() # Pushes content up
+        
+        top_section_layout.addLayout(image_upload_layout, 1) # Assign stretch factor 1
+
+        # Name and Description section (Right)
+        name_desc_layout = QVBoxLayout()
+        self.name_input = QLineEdit()
+        self.name_input.setPlaceholderText("Enter product name")
+        self.name_input.setObjectName("product_name_input")
+        self.desc_input = QTextEdit()
+        self.desc_input.setPlaceholderText("Enter product description (max 3 lines recommended)")
+        self.desc_input.setFixedHeight(100) # Adjust height as needed
+        self.desc_input.setObjectName("product_desc_input")
+
+        name_desc_layout.addLayout(self._create_labeled_widget("🧪 Product Name", self.name_input, is_large=True))
+        self.desc_input.setPlaceholderText("Make the description short and concise.")
+        name_desc_layout.addLayout(self._create_labeled_widget("📝 Description", self.desc_input, is_large=True))
+
+        top_section_layout.addLayout(name_desc_layout, 3)
+
+        form_layout.addLayout(top_section_layout)
+        form_layout.addWidget(self._create_separator())
+
+        dates_sku_layout = QHBoxLayout()
+        dates_sku_layout.setSpacing(20)
+
+        dates_column1_layout = QVBoxLayout()
+        self.manufacture_input = QDateEdit(calendarPopup=True)
+        self.manufacture_input.setDate(QDate.currentDate())
+        self.expired_input = QDateEdit(calendarPopup=True)
+        self.expired_input.setDate(QDate.currentDate().addMonths(9))
+        dates_column1_layout.addLayout(self._create_labeled_widget("🏭 Manufacture Date", self.manufacture_input))
+        dates_column1_layout.addLayout(self._create_labeled_widget("⌛ Best Before Date", self.expired_input))
+
+        dates_column2_layout = QVBoxLayout()
+        self.arrival_input = QDateEdit(calendarPopup=True)
+        self.arrival_input.setDate(QDate.currentDate())
+        self.sku_input = QLineEdit()
+        self.sku_input.setPlaceholderText("e.g., 1000")
+        dates_column2_layout.addLayout(self._create_labeled_widget("📦 Arrival Date", self.arrival_input))
+        dates_column2_layout.addLayout(self._create_labeled_widget("🔢 SKU (Stock Keeping Unit)", self.sku_input))
+        
+        dates_sku_layout.addLayout(dates_column1_layout,1)
+        dates_sku_layout.addLayout(dates_column2_layout,1)
+
+        form_layout.addLayout(dates_sku_layout)
+
+        self.location_input = QLineEdit()
+        self.location_input.setPlaceholderText("e.g., Shelf A, Row 3")
+        form_layout.addLayout(self._create_labeled_widget("🏢 Rack Location / Storage", self.location_input))
+
+        self.excel_input = QLineEdit()
+        form_layout.addLayout(self._create_labeled_widget("🗂️ Excel Filename", self.excel_input))
+        form_layout.addStretch(1)
+
+        # self.submit_btn = QPushButton("✓ Add Product to Inventory")
+        self.submit_btn = QPushButton("✓ Update admin on this new products")
+        self.submit_btn.setFixedHeight(50)
+        self.submit_btn.setStyleSheet("QPushButton { background-color: #0504AA; } QPushButton:hover { background-color: #4CC9F0; }")
+        self.submit_btn.clicked.connect(self.add_product)
+        form_layout.addWidget(self.submit_btn)
+
+        content_widget.setLayout(form_layout)
+        scroll_area.setWidget(content_widget)
+
+        main_window_layout.addWidget(scroll_area)
+
+        self.image_path = ''
+
+    def _create_labeled_widget(self, label_text, widget, is_large=False):
+        """Helper function to create a consistent labeled widget group."""
+        container_layout = QVBoxLayout()
+        label = QLabel(label_text)
+        
+        if is_large:
+            label.setStyleSheet("font-weight: bold; font-size: 18px; margin-bottom: 5px; color: #333;")
+        else:
+            label.setStyleSheet("font-weight: bold; font-size: 14px; margin-bottom: 5px; color: #333;")
+        
+        # Common widget styling
+        base_style = "padding: 8px; border-radius: 5px; border: 1px solid #ccc;"
+        
+        if isinstance(widget, QLineEdit):
+            if is_large:
+                widget.setStyleSheet(f"{base_style} font-size: 16px;")
+                widget.setFixedHeight(45)
+            else:
+                widget.setStyleSheet(f"{base_style} font-size: 13px;")
+                widget.setFixedHeight(38)
+        elif isinstance(widget, QTextEdit):
+            if is_large:
+                widget.setStyleSheet(f"{base_style} font-size: 16px;")
+            else:
+                widget.setStyleSheet(f"{base_style} font-size: 13px;")
+        elif isinstance(widget, QDateEdit):
+            if is_large:
+                widget.setStyleSheet(f"{base_style} font-size: 16px;")
+                widget.setFixedHeight(45)
+            else:
+                widget.setStyleSheet(f"{base_style} font-size: 13px;")
+                widget.setFixedHeight(38)
+
+        container_layout.addWidget(label)
+        container_layout.addWidget(widget)
+        container_layout.setSpacing(3) # Reduced spacing between label and widget
+        return container_layout
+    
+    def _create_separator(self):
+        separator = QFrame()
+        separator.setFrameShape(QFrame.HLine)
+        separator.setFrameShadow(QFrame.Sunken)
+        separator.setStyleSheet("background-color: #e0e0e0; height: 1px;")
+        return separator
+
+    # Add new method to handle frame click
+    def frame_click(self, event):
+        self.upload_image()
+
+    def upload_image(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Select Image", "", "Image Files (*.png *.jpg *.jpeg *.bmp)")
+        if path:
+            self.image_path = path
+            filename = os.path.basename(path)
+            
+            # Update image name label and show the upload another button
+            self.image_name_label.setText(filename)
+            self.upload_another_btn.show()
+            
+            # Load and display the image preview
+            pixmap = QPixmap(path)
+            if not pixmap.isNull():
+                # Scale the pixmap to fit the frame while preserving aspect ratio
+                preview_size = self.image_preview_frame.size()
+                scaled_pixmap = pixmap.scaled(
+                    preview_size.width() - 20, 
+                    preview_size.height() - 20, 
+                    Qt.KeepAspectRatio, 
+                    Qt.SmoothTransformation
+                )
+                
+                # Display the scaled image
+                self.image_preview.setPixmap(scaled_pixmap)
+                self.image_preview.setAlignment(Qt.AlignCenter)
+                self.image_preview.setStyleSheet("border: none; background-color: transparent;")
+                
+                # Update the frame's appearance
+                self.image_preview_frame.setStyleSheet(
+                    "border: 1px solid #4CC9F0; border-radius: 12px; background-color: white; padding: 8px;"
+                )
+            else:
+                self.image_preview.setText("Failed to load image")
+                self.image_preview.setStyleSheet(
+                    "border: none; background-color: transparent; font-size: 16px; color: red;"
+                )
+        else:
+            # If cancelled, don't change anything if there's already an image
+            if not self.image_path:
+                self.image_name_label.setText("Image Name")
+                self.upload_another_btn.hide()
+                self.image_preview.setText("Upload Image")
+                self.image_preview.setStyleSheet(
+                    "border: none; background-color: transparent; font-size: 16px; color: #333;"
+                )
+                self.image_preview.setPixmap(QPixmap())  # Clear any previous image
+                self.image_preview_frame.setStyleSheet(
+                    "border: 2px dashed #4CC9F0; border-radius: 12px; background-color: #f5f5fa;"
+                )
+
+    def generate_barcode(self):
+        number = ''.join([str(random.randint(0, 9)) for _ in range(12)])
+        ean = barcode.get('ean13', number, writer=ImageWriter())
+        filename = f"barcode_{number}"
+        path = ean.save(filename)
+        return number, path
+
+    def get_next_batch_number(self, product_name):
+        conn = sqlite3.connect('medical_system.db')
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM Products WHERE product_name = ?", (product_name,))
+        count = cursor.fetchone()[0]
+        conn.close()
+        return f"Batch {count + 1}"
+
+    def add_product(self):
+        name = self.name_input.text().strip()
+        desc = self.desc_input.toPlainText().strip()
+        m_date = self.manufacture_input.date().toString("yyyy-MM-dd")
+        e_date = self.expired_input.date().toString("yyyy-MM-dd")
+        a_date = self.arrival_input.date().toString("yyyy-MM-dd")
+        sku = self.sku_input.text().strip()
+        location = self.location_input.text().strip()
+
+        if not name:
+            QMessageBox.warning(self, "Missing Data", "Product name is required.")
+            return
+
+        batch = self.get_next_batch_number(name)
+        barcode_number, barcode_path = self.generate_barcode()
+
+        conn = sqlite3.connect('medical_system.db')
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT INTO Products (
+                user_id, product_name, product_desc, manufacture_date,
+                expired_date, arrival_date, sku, location, batch, barcode, product_image
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            1, name, desc, m_date, e_date, a_date, sku, location, batch, barcode_number, self.image_path
+        ))
+        conn.commit()
+        conn.close()
+
+        QMessageBox.information(
+            self,
+            "Product Added",
+            f"✅ Product added successfully!\n\n🆔 Batch: {batch}\n🔖 Barcode: {barcode_number}\n🖼️ Image: {os.path.basename(self.image_path)}\n📁 Barcode Saved at:\n{barcode_path}"
+        )
+        self.clear_fields()
+
+    def clear_fields(self):
+        self.name_input.clear()
+        self.desc_input.clear()
+        self.sku_input.clear()
+        self.location_input.clear()
+        self.manufacture_input.setDate(QDate.currentDate())
+        self.expired_input.setDate(QDate.currentDate())
+        self.arrival_input.setDate(QDate.currentDate())
+        self.image_path = ''
+        self.image_name_label.setText("Image Name")
+        self.upload_another_btn.hide()
+        self.image_preview.setText("Upload Image")
+        self.image_preview.setStyleSheet("border: none; background-color: transparent; font-size: 16px; color: #333;")
+        self.image_preview.setPixmap(QPixmap())  # Clear any previous image
+
+    def stylesheet(self):
+        return """
+        /* Main background color for all widgets */
+        QWidget, QScrollArea, QFrame, QDialog {
+            background-color: #f3f3fe; /* Light lavender/periwinkle background */
+        }
+        
+        /* Main window background */
+        QWidget#AddProductWindow {
+            background-color: #f3f3fe; /* Light lavender/periwinkle background */
+            font-family: "Segoe UI", Segoe UI, Arial, sans-serif;
+        }
+        
+        /* Content widget background */
+        QScrollArea > QWidget {
+            background-color: #f3f3fe;
+        }
+        
+        #page_title {
+            font-size: 24px;
+            font-weight: bold;
+            color: #333;
+            margin: 10px 0;
+            background-color: transparent;
+        }
+        
+        QLabel {
+            font-size: 14px;
+            color: #333333;
+            margin-bottom: 2px;
+            background-color: transparent;
+        }
+
+        QLineEdit, QTextEdit, QDateEdit {
+            border: 1px solid #ced4da;
+            border-radius: 6px;
+            padding: 8px 10px;
+            font-size: 13.5px;
+            background-color: #ffffff;
+            color: #000000;
+        }
+        
+        QLineEdit:focus, QTextEdit:focus, QDateEdit:focus {
+            border-color: #4CC9F0;
+            box-shadow: 0 0 5px rgba(76, 201, 240, 0.5);
+        }
+        
+        QDateEdit::drop-down {
+            subcontrol-origin: padding;
+            subcontrol-position: top right;
+            width: 20px;
+            border-left-width: 1px;
+            border-left-color: #ced4da;
+            border-left-style: solid;
+            border-top-right-radius: 6px;
+            border-bottom-right-radius: 6px;
+        }
+        
+        QDateEdit::down-arrow {
+            image: url(placeholder_for_arrow_icon.png);
+            width: 12px;
+            height: 12px;
+        }
+
+        QPushButton {
+            background-color: #4CC9F0; /* Updated to requested color */
+            color: white;
+            font-size: 14.5px;
+            font-weight: bold;
+            border: none;
+            border-radius: 6px;
+            padding: 10px 15px;
+            min-height: 30px;
+        }
+        
+        QPushButton:hover {
+            background-color: #3ba8d0; /* Darker version of main color */
+        }
+        
+        #menu_button {
+            background-color: #4CC9F0; /* Changed to solid from transparent */
+            color: white; /* Text color changed to white for better contrast */
+            border: none; /* Removed border since it's now solid */
+            font-size: 15px;
+            font-weight: bold;
+        }
+        
+        #menu_button:hover {
+            background-color: #3ba8d0; /* Darker blue on hover */
+        }
+        
+        #image_button {
+            font-size: 18px; /* Larger font for image button */
+            background-color: #4CC9F0;
+            color: white;
+            border: none;
+            border-radius: 12px;
+            padding: 12px;
+            margin-top: 10px;
+        }
+        
+        #image_button:hover {
+            background-color: #3ba8d0;
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+        }
+        
+        #product_name_input, #product_desc_input {
+            font-size: 16px; /* Larger font for these inputs */
+            border: 2px solid #4CC9F0;
+        }
+        
+        QPushButton#submit_btn {
+            background-color: #0504AA; /* Dark blue for submit button */
+            font-size: 18px;
+            padding: 12px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+        
+        QPushButton#submit_btn:hover {
+            background-color: #4CC9F0; /* Light blue on hover */
+            box-shadow: 0 6px 8px rgba(0, 0, 0, 0.15);
+        }
+        
+        QScrollArea {
+            border: 1px solid #dee2e6;
+            border-radius: 8px;
+        }
+
+        QScrollBar:vertical {
+            border: none;
+            background: #f0f0f0;
+            width: 10px;
+            margin: 0px;
+        }
+        
+        QScrollBar::handle:vertical {
+            background: #4CC9F0;
+            min-height: 20px;
+            border-radius: 5px;
+        }
+        
+        QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+            height: 0px;
+            background: none;
+        }
+        
+        QScrollBar::up-arrow:vertical, QScrollBar::down-arrow:vertical {
+            background: none;
+        }
+        
+        QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
+            background: none;
+        }
+
+        QMessageBox {
+            font-size: 13.5px;
+        }
+        
+        QMessageBox QLabel {
+            color: #333;
+        }
+        
+        QMessageBox QPushButton {
+            padding: 8px 15px;
+            min-width: 80px;
+        }
+
+        #upload_another_btn {
+            background-color: #f0f0f0;
+            color: #4CC9F0;
+            border: 1px solid #4CC9F0;
+            border-radius: 4px;
+            font-size: 12px;
+            padding: 4px 8px;
+        }
+        
+        #upload_another_btn:hover {
+            background-color: #e0f7fa;
+        }
+
+        /* Calendar popup styling */
+        QCalendarWidget {
+            background-color: white;
+        }
+        
+        QCalendarWidget QAbstractItemView {
+            color: black;
+            background-color: white;
+            selection-background-color: #4CC9F0;
+            selection-color: white;
+        }
+        
+        QCalendarWidget QWidget {
+            color: black;
+            background-color: white;
+        }
+        
+        QCalendarWidget QToolButton {
+            color: black;
+            background-color: white;
+            border: 1px solid #ced4da;
+            border-radius: 4px;
+        }
+        """
+
+
+if __name__ == "__main__":
+    app = QApplication(sys.argv)
+    window = AddProductWindow()
+    window.show()
+    sys.exit(app.exec_())
