@@ -1,0 +1,1524 @@
+import sys
+import sqlite3
+import time
+import random
+import string
+from PyQt5.QtWidgets import (
+    QApplication, QWidget, QLabel, QLineEdit, QTextEdit, QPushButton, QDateEdit,
+    QGridLayout, QVBoxLayout, QHBoxLayout, QFileDialog, QFrame, QCalendarWidget,
+    QFormLayout, QMessageBox, QStackedLayout, QSizePolicy, QButtonGroup, QDialog
+)
+from PyQt5.QtGui import QIcon, QPixmap, QFont, QPainter, QPainterPath, QColor, QImage
+from PyQt5.QtCore import QDate, Qt, QSize, QPropertyAnimation, QEasingCurve, pyqtProperty, QTimer
+import os
+import hashlib  # Import hashlib
+
+# Import barcode libraries
+import barcode
+from barcode.writer import ImageWriter
+
+
+# --- Processing Dialog ---
+class ProcessingDialog(QDialog):
+    def __init__(self, message="Processing...", parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Processing")
+        self.setFixedSize(250, 100)
+        self.setStyleSheet("background-color: #fff0e6;") # Light peach background
+        layout = QVBoxLayout()
+        self.label = QLabel(message)
+        self.label.setFont(QFont("Arial", 12))
+        self.label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(self.label)
+        self.setLayout(layout)
+        self.setWindowFlag(Qt.FramelessWindowHint) # Remove frame and title bar
+        self.setWindowModality(Qt.ApplicationModal) # Make it modal
+        self.center_on_parent() # Center on parent window if available
+
+    def center_on_parent(self):
+        if self.parent():
+            parent_rect = self.parent().geometry()
+            self_rect = self.geometry()
+            new_x = parent_rect.x() + (parent_rect.width() - self_rect.width()) // 2
+            new_y = parent_rect.y() + (parent_rect.height() - self_rect.height()) // 2
+            self.move(new_x, new_y)
+
+
+# --- Profile Widget (from Owner Profile.py, refactored) ---
+class ProfileWidget(QWidget):
+    def __init__(self, username, user_id, branch):
+        super().__init__()
+        self.username = username
+        self.user_id = user_id
+        self.branch_val = branch
+        self.is_editable = False  # Keep track of edit state
+        self.initUI()  # Initialize UI elements
+        user_data = self.load_user_data()  # Load user data and get the result
+
+        # Determine if the user is new based on loaded data
+        is_new_user = not (user_data and user_data[1] and user_data[2])  # Check if email or phone is empty
+
+        if is_new_user:
+            self.set_new_user_edit_mode()  # Start in new user edit mode for new users
+        else:
+            self.set_view_mode()  # Start in view mode for existing users
+
+    def load_user_data(self):
+        conn = sqlite3.connect("medical_system.db")
+        c = conn.cursor()
+        c.execute("SELECT username, email, phone_no, branch FROM Users WHERE user_id=?", (self.user_id,))
+        result = c.fetchone()
+        conn.close()
+
+        if result:
+            username, email, phone, branch = result
+            self.name.setText(username)
+            self.owner_id.setText(str(self.user_id))
+            self.branch.setText(branch)
+            self.email.setText(email if email else "")
+            self.phone_number.setText(phone if phone else "")
+
+            self.name.setReadOnly(True)
+            self.owner_id.setReadOnly(True)
+            self.branch.setReadOnly(True)
+
+            profile_pic_path = f"profile_pics/{self.user_id}.png"
+            if os.path.exists(profile_pic_path):
+                pixmap = QPixmap(profile_pic_path)
+                if not pixmap.isNull():
+                    self.profile_pic.setPixmap(self.crop_to_circle(pixmap, 180))
+            return result  # Return result
+        return None  # Return None if no result
+
+    def initUI(self):
+        main_layout = QVBoxLayout(self)
+        main_layout.setAlignment(Qt.AlignTop)
+
+        self.title = QLabel("Profile")
+        self.title.setFont(QFont("Arial", 28, QFont.Bold))
+        self.title.setAlignment(Qt.AlignCenter)
+        main_layout.addSpacing(20)
+        main_layout.addWidget(self.title)
+        main_layout.addSpacing(10)
+
+        white_frame = QFrame()
+        white_frame.setFixedSize(1100, 550)
+        white_frame.setStyleSheet("background-color: #eeeded; border-radius: 20px;")
+        frame_layout = QVBoxLayout(white_frame)
+
+        edit_layout = QHBoxLayout()
+        edit_layout.addStretch()
+        self.edit_btn = QPushButton()  # Store as instance variable
+        self.edit_btn.setIcon(QIcon("C:\\Kai Shuang\\3.png"))
+        self.edit_btn.setIconSize(QSize(40, 40))
+        self.edit_btn.setFixedSize(60, 60)
+        self.edit_btn.setStyleSheet("border: none;")
+        self.edit_btn.clicked.connect(self.toggle_full_edit_mode)  # Connect to toggle_full_edit_mode
+        edit_layout.addWidget(self.edit_btn)
+        frame_layout.addLayout(edit_layout)
+
+        avatar_layout = QVBoxLayout()
+        avatar_layout.setAlignment(Qt.AlignTop)
+
+        self.profile_pic = QLabel()
+        self.profile_pic.setFixedSize(180, 180)
+        self.profile_pic.setStyleSheet("border: 1px solid gray; background-color: #fff; border-radius: 90px;")
+        self.profile_pic.setAlignment(Qt.AlignCenter)
+        self.set_default_avatar()
+
+        upload_btn = QPushButton("Upload Photo")
+        upload_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #d08b5b;
+                color: white;
+                padding: 10px 20px;
+                font-size: 16px;
+                border-radius: 10px;
+            }
+        """)
+        self.upload_btn = upload_btn  # Store as instance variable
+        self.upload_btn.clicked.connect(self.upload_photo)  # Connect upload button
+        avatar_layout.addWidget(self.profile_pic)
+        avatar_layout.addSpacing(10)
+        avatar_layout.addWidget(self.upload_btn, alignment=Qt.AlignHCenter)
+
+        self.form_layout = QFormLayout()  # Store form_layout as instance variable
+        self.form_layout.setVerticalSpacing(25)
+
+        self.name_label = QLabel("Name:")
+        self.name = QLineEdit()
+        self.owner_id_label = QLabel("Owner ID:")
+        self.owner_id = QLineEdit()
+        self.phone_number_label = QLabel("Phone Number:")
+        self.phone_number = QLineEdit()
+        self.email_label = QLabel("Email:")
+        self.email = QLineEdit()
+        self.branch_label = QLabel("Branch:")
+        self.branch = QLineEdit()
+
+        # New password fields
+        self.password_label = QLabel("Password:")
+        self.password_input = QLineEdit()
+        self.password_input.setEchoMode(QLineEdit.Password)
+
+        self.confirm_password_label = QLabel("Confirm Password:")
+        self.confirm_password_input = QLineEdit()
+        self.confirm_password_input.setEchoMode(QLineEdit.Password)
+
+        for field in [self.name, self.owner_id, self.phone_number, self.email, self.branch, self.password_input,
+                      self.confirm_password_input]:
+            field.setFixedWidth(500)
+            field.setStyleSheet("""
+                QLineEdit {
+                    border: 2px solid #773a1f;
+                    border-radius: 15px;
+                    padding: 10px;
+                    font-size: 15px;
+                }
+            """)
+
+        # Add all rows to the form layout initially
+        self.form_layout.addRow(self.name_label, self.name)
+        self.form_layout.addRow(self.owner_id_label, self.owner_id)
+        self.form_layout.addRow(self.phone_number_label, self.phone_number)
+        self.form_layout.addRow(self.email_label, self.email)
+        self.form_layout.addRow(self.branch_label, self.branch)
+
+        self.form_layout.addRow(self.password_label, self.password_input)
+        self.form_layout.addRow(self.confirm_password_label, self.confirm_password_input)
+
+        save_btn = QPushButton("Save Changes")
+        self.save_btn = save_btn  # Store as instance variable
+        self.save_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #d08b5b;
+                color: white;
+                padding: 10px 20px;
+                font-size: 16px;
+                border-radius: 10px;
+            }
+        """)
+        self.save_btn.clicked.connect(self.save_changes)
+        self.form_layout.addRow("", self.save_btn)
+
+        content_layout = QHBoxLayout()
+        content_layout.addStretch()
+        content_layout.addLayout(avatar_layout)
+        content_layout.addSpacing(50)
+        content_layout.addLayout(self.form_layout)  # Use instance variable
+        content_layout.addStretch()
+
+        frame_layout.addStretch()
+        frame_layout.addLayout(content_layout)
+        frame_layout.addStretch()
+
+        center_frame_layout = QHBoxLayout()
+        center_frame_layout.addStretch()
+        center_frame_layout.addWidget(white_frame)
+        center_frame_layout.addStretch()
+
+        main_layout.addLayout(center_frame_layout)
+        main_layout.addStretch()
+        self.setLayout(main_layout)
+
+    def set_default_avatar(self):
+        pixmap = QPixmap("profile_icon.png")
+        if not pixmap.isNull():
+            self.profile_pic.setPixmap(pixmap.scaled(180, 180, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+
+    def upload_photo(self):
+        if not self.is_editable:
+            return  # Only allow upload in edit mode
+        file_path, _ = QFileDialog.getOpenFileName(self, "Select Profile Photo", "", "Images (*.png *.jpg *.jpeg)")
+        if file_path:
+            original_pixmap = QPixmap(file_path)
+            if original_pixmap.isNull():
+                return
+            os.makedirs("profile_pics", exist_ok=True)
+            cropped_pixmap = self.crop_to_circle(original_pixmap, 180)
+            save_path = f"profile_pics/{self.user_id}.png"
+            cropped_pixmap.save(save_path)
+            self.profile_pic.setPixmap(cropped_pixmap)
+
+    def crop_to_circle(self, pixmap, size):
+        w = pixmap.width()
+        h = pixmap.height()
+        side = min(w, h)
+        x = (w - side) // 2
+        y = (h - side) // 2
+        square_pixmap = pixmap.copy(x, y, side, side).scaled(size, size, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+        masked_pixmap = QPixmap(size, size)
+        masked_pixmap.fill(Qt.transparent)
+        painter = QPainter(masked_pixmap)
+        painter.setRenderHint(QPainter.Antialiasing)
+        path = QPainterPath()
+        path.addEllipse(0, 0, size, size)
+        painter.setClipPath(path)
+        painter.drawPixmap(0, 0, square_pixmap)
+        painter.end()
+        return masked_pixmap
+
+    def set_view_mode(self):
+        self.is_editable = False
+        self.edit_btn.show()  # Show edit button in view mode
+
+        # Set fields editability
+        self.name.setReadOnly(True)
+        self.owner_id.setReadOnly(True)
+        self.branch.setReadOnly(True)
+        self.email.setReadOnly(True)
+        self.phone_number.setReadOnly(True)
+        self.password_input.setReadOnly(True)
+        self.confirm_password_input.setReadOnly(True)
+
+        # Control visibility for view mode
+        self.name_label.setVisible(True)
+        self.name.setVisible(True)
+        self.owner_id_label.setVisible(True)
+        self.owner_id.setVisible(True)
+        self.branch_label.setVisible(True)
+        self.branch.setVisible(True)
+        self.phone_number_label.setVisible(True)
+        self.phone_number.setVisible(True)
+        self.email_label.setVisible(True)
+        self.email.setVisible(True)
+
+        # Hide edit-specific fields and buttons
+        self.password_label.setVisible(False)
+        self.password_input.setVisible(False)
+        self.confirm_password_label.setVisible(False)
+        self.confirm_password_input.setVisible(False)
+        self.save_btn.setVisible(False)
+        self.upload_btn.setVisible(False)
+
+        # Clear password fields when switching out of edit mode
+        self.password_input.clear()
+        self.confirm_password_input.clear()
+
+        # Re-add rows in view mode order
+        self.rearrange_form_layout(mode="view")
+
+    def set_new_user_edit_mode(self):
+        self.is_editable = True
+        self.edit_btn.hide()  # Hide edit button for initial new user setup
+
+        # Set fields editability
+        self.name.setReadOnly(True)
+        self.owner_id.setReadOnly(True)
+        self.branch.setReadOnly(True)
+        self.email.setReadOnly(False)  # Email is editable for new users
+        self.phone_number.setReadOnly(False)  # Phone number is editable for new users
+        self.password_input.setReadOnly(True)  # Password fields are not editable initially
+        self.confirm_password_input.setReadOnly(True)
+
+        # Control visibility for new user edit mode
+        self.name_label.setVisible(True)
+        self.name.setVisible(True)
+        self.owner_id_label.setVisible(True)
+        self.owner_id.setVisible(True)
+        self.branch_label.setVisible(True)
+        self.branch.setVisible(True)
+        self.phone_number_label.setVisible(True)
+        self.phone_number.setVisible(True)
+        self.email_label.setVisible(True)
+        self.email.setVisible(True)
+
+        # Hide password fields initially for new users
+        self.password_label.setVisible(False)
+        self.password_input.setVisible(False)
+        self.confirm_password_label.setVisible(False)
+        self.confirm_password_input.setVisible(False)
+
+        # Show save and upload buttons
+        self.save_btn.setVisible(True)
+        self.upload_btn.setVisible(True)
+
+        # Clear password fields just in case
+        self.password_input.clear()
+        self.confirm_password_input.clear()
+
+        # Re-add rows in new user edit mode order
+        self.rearrange_form_layout(mode="new_user_edit")
+
+    def set_full_edit_mode(self):
+        self.is_editable = True
+        self.edit_btn.hide()  # Hide edit button in full edit mode
+
+        # Set fields editability
+        self.name.setReadOnly(True)
+        self.owner_id.setReadOnly(True)
+        self.branch.setReadOnly(True)
+        self.email.setReadOnly(False)
+        self.phone_number.setReadOnly(False)
+        self.password_input.setReadOnly(False)
+        self.confirm_password_input.setReadOnly(False)
+
+        # Apply stylesheet to editable fields to remove focus outline
+        editable_style = """
+            QLineEdit {
+                border: 2px solid #773a1f;
+                border-radius: 15px;
+                padding: 10px;
+                font-size: 15px;
+            }
+            QLineEdit:focus {
+                outline: none; /* Remove default focus outline */
+                border: 2px solid #773a1f; /* Keep the border */
+            }
+        """
+        self.email.setStyleSheet(editable_style)
+        self.phone_number.setStyleSheet(editable_style)
+        self.password_input.setStyleSheet(editable_style)
+        self.confirm_password_input.setStyleSheet(editable_style)
+
+        # Set read-only fields style back to default or view style if needed
+        view_style = """
+            QLineEdit {
+                border: 2px solid #773a1f;
+                border-radius: 15px;
+                padding: 10px;
+                font-size: 15px;
+                background-color: #eeeded; /* Indicate read-only */
+            }
+        """
+        self.name.setStyleSheet(view_style)
+        self.owner_id.setStyleSheet(view_style)
+        self.branch.setStyleSheet(view_style)
+
+        # Control visibility for full edit mode
+        self.email_label.setVisible(True)
+        self.email.setVisible(True)
+        self.phone_number_label.setVisible(True)
+        self.phone_number.setVisible(True)
+        self.password_label.setVisible(True)
+        self.password_input.setVisible(True)
+        self.confirm_password_label.setVisible(True)
+        self.confirm_password_input.setVisible(True)
+
+        # Hide view-specific fields
+        self.name_label.setVisible(False)
+        self.name.setVisible(False)
+        self.owner_id_label.setVisible(False)
+        self.owner_id.setVisible(False)
+        self.branch_label.setVisible(False)
+        self.branch.setVisible(False)
+
+        # Show save and upload buttons
+        self.save_btn.setVisible(True)
+        self.upload_btn.setVisible(True)
+
+        # Re-add rows in full edit mode order
+        self.rearrange_form_layout(mode="full_edit")
+
+    def toggle_full_edit_mode(self):
+        # This is called by the edit_btn. It should only switch to full edit mode.
+        self.set_full_edit_mode()
+
+    def rearrange_form_layout(self, mode):
+        # Remove all current items from the layout first
+        while self.form_layout.count():
+            item = self.form_layout.takeAt(0)
+            # We don't delete widgets as they are reused, just take them out of the layout
+            # No need to set visibility to False here as it's done in the mode setting functions
+
+        # Add items back based on the mode
+        if mode == "view":
+            self.form_layout.addRow(self.name_label, self.name)
+            self.form_layout.addRow(self.owner_id_label, self.owner_id)
+            self.form_layout.addRow(self.phone_number_label, self.phone_number)
+            self.form_layout.addRow(self.email_label, self.email)
+            self.form_layout.addRow(self.branch_label, self.branch)
+            # Save button is hidden in view mode, but we add its row structure to keep layout consistent
+            self.form_layout.addRow("", self.save_btn)
+        elif mode == "new_user_edit":
+            # Order for new user edit mode: Name, Owner ID, Phone, Email, Branch, Save
+            self.form_layout.addRow(self.name_label, self.name)
+            self.form_layout.addRow(self.owner_id_label, self.owner_id)
+            self.form_layout.addRow(self.phone_number_label, self.phone_number)
+            self.form_layout.addRow(self.email_label, self.email)
+            self.form_layout.addRow(self.branch_label, self.branch)
+            self.form_layout.addRow("", self.save_btn)  # Save button row
+        elif mode == "full_edit":
+            # Order for full edit mode: Phone, Email, Password, Confirm Password, Save
+            self.form_layout.addRow(self.phone_number_label, self.phone_number)
+            self.form_layout.addRow(self.email_label, self.email)
+            self.form_layout.addRow(self.password_label, self.password_input)
+            self.form_layout.addRow(self.confirm_password_label, self.confirm_password_input)
+            self.form_layout.addRow("", self.save_btn)  # Save button row
+
+    def save_changes(self):
+        if not self.is_editable:
+            return  # Ensure we are in edit mode to save
+
+        email = self.email.text().strip()
+        phone = self.phone_number.text().strip()
+        password = self.password_input.text()
+        confirm_password = self.confirm_password_input.text()
+
+        # Validation for email and phone number (always required when saving)
+        if not email or not phone:
+            QMessageBox.warning(self, "Missing Information", "Please fill in both email and phone number.")
+            return  # Stop saving if fields are empty
+
+        # Validation for password fields if they are visible (meaning we are in edit mode)
+        if self.password_label.isVisible():
+            if password or confirm_password:
+                if password != confirm_password:
+                    QMessageBox.warning(self, "Password Mismatch", "Password and Confirm Password do not match.")
+                    return
+                if len(password) < 6:
+                    QMessageBox.warning(self, "Password Too Short", "Password must be at least 6 characters long.")
+                    return
+
+        conn = sqlite3.connect("medical_system.db")
+        c = conn.cursor()
+
+        # Update email and phone number
+        c.execute("UPDATE Users SET email=?, phone_no=? WHERE user_id=?", (email, phone, self.user_id))
+
+        # Update password if provided and passwords match and are long enough
+        if self.password_label.isVisible() and password and (password == confirm_password) and (len(password) >= 6):
+            # Hash the password before saving
+            hashed_password = hashlib.sha256(password.encode()).hexdigest()
+            c.execute("UPDATE Users SET password=? WHERE user_id=?", (hashed_password, self.user_id))
+
+        conn.commit()
+        conn.close()
+
+        QMessageBox.information(self, "Success", "Profile updated successfully!")
+        self.set_view_mode()  # Exit edit mode and go to view mode after saving
+
+    def close_app(self):
+        QApplication.quit()
+
+
+class PopupWindow(QWidget):
+    def __init__(self, title):
+        super().__init__()
+        self.setWindowTitle(title)
+        self.setFixedSize(300, 150)
+        self.setStyleSheet("background-color: #fff0e6;")
+        layout = QVBoxLayout()
+        label = QLabel(f"This is the {title} window")
+        label.setFont(QFont("Arial", 14))
+        label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(label)
+        self.setLayout(layout)
+
+
+# --- Product Form Widget (from add product.py, refactored) ---
+class ProductFormWidget(QWidget):
+    def __init__(self, user_id=None, branch=None):
+        super().__init__()
+        self.user_id_val = user_id  # Store user_id
+        self.branch_val = branch  # Store branch
+        self.photo_uploaded = False  # Flag to track if a photo has been uploaded
+        self.initUI()
+
+    def initUI(self):
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(10, 10, 10, 10)
+        self.title_label = QLabel("Add Product Information")
+        self.title_label.setFont(QFont("Arial", 24, QFont.Bold))
+        self.title_label.setStyleSheet("color: #5D3A00;")
+        self.title_label.setAlignment(Qt.AlignCenter)
+        main_layout.addWidget(self.title_label)
+        self.white_frame = QFrame()
+        self.white_frame.setStyleSheet(
+            "background-color: white; border-radius: 15px; box-shadow: 0px 0px 10px rgba(0,0,0,0.1);")
+        self.white_frame.setFixedWidth(1200)
+        white_layout = QGridLayout(self.white_frame)
+        white_layout.setContentsMargins(40, 40, 40, 40)
+        white_layout.setSpacing(20)
+        photo_edit_row = QHBoxLayout()
+        photo_edit_row.setContentsMargins(0, 0, 0, 0)
+        photo_edit_row.setSpacing(0)
+        photo_frame = QFrame()
+        photo_frame.setFixedSize(300, 300)
+        photo_frame_layout = QVBoxLayout(photo_frame)
+        photo_frame_layout.setContentsMargins(0, 0, 0, 0)
+        self.photo_label = QLabel("Upload\nPhoto")
+        self.photo_label.setAlignment(Qt.AlignCenter)
+        self.photo_label.setFixedSize(300, 300)
+        self.photo_label.setStyleSheet(
+            "background-color: #666; color: white; font-size: 24px; border-radius: 10px;"
+        )
+        self.photo_label.mousePressEvent = self.upload_photo
+        photo_frame_layout.addWidget(self.photo_label)
+        photo_edit_row.addWidget(photo_frame)
+        edit_button_col = QVBoxLayout()
+        edit_button_col.addStretch()
+        edit_button = QPushButton()
+        edit_button.setIcon(QIcon("C:\\Kai Shuang\\6.png"))
+        edit_button.setIconSize(QSize(30, 30))
+        edit_button.setFixedSize(40, 40)
+        edit_button.setStyleSheet("border: none; background-color: transparent;")
+        edit_button.setToolTip("Edit")
+        edit_button.clicked.connect(self.upload_photo)
+        edit_button_col.addWidget(edit_button, alignment=Qt.AlignRight)
+        photo_edit_row.addLayout(edit_button_col)
+        font_label = QFont("Arial", 12, QFont.Bold)
+
+        def create_label(text):
+            label = QLabel(text)
+            label.setFont(font_label)
+            label.setStyleSheet("color: #5D3A00;")
+            return label
+
+        input_style = "padding: 8px; border: 1px solid #8B5A2B; border-radius: 5px; background-color: #eeeded;"
+        read_only_style = """
+            QLineEdit {
+                padding: 8px;
+                border: 1px solid #8B5A2B;
+                border-radius: 5px;
+                background-color: #d3d3d3; /* Grayed out background */
+                color: #555555; /* Darker text color */
+            }
+        """
+        self.owner_id = QLineEdit()
+        self.owner_id.setStyleSheet(read_only_style)  # Apply read-only style
+        self.owner_id.setReadOnly(True)  # Make read only
+        if self.user_id_val is not None:
+            self.owner_id.setText(str(self.user_id_val))
+
+        self.update_date = self.create_custom_dateedit()
+        self.update_date.setStyleSheet(input_style)
+        default_date = QDate(2025, 1, 1)
+        self.update_date.setDate(default_date)
+        self.branch = QLineEdit()
+        self.branch.setStyleSheet(read_only_style)  # Apply read-only style
+        self.branch.setReadOnly(True)  # Make read only
+        if self.branch_val is not None:
+            self.branch.setText(self.branch_val)
+
+        self.product_name = QLineEdit()
+        self.product_name.setStyleSheet(input_style)
+        self.arrival_date = self.create_custom_dateedit()
+        self.arrival_date.setStyleSheet(input_style)
+        self.arrival_date.setDate(default_date)
+        self.description = QTextEdit()
+        self.description.setFixedHeight(120)
+        self.description.setStyleSheet(input_style)
+        self.manufacture_date = self.create_custom_dateedit()
+        self.manufacture_date.setStyleSheet(input_style)
+        self.manufacture_date.setDate(default_date)
+        self.expiry_date = self.create_custom_dateedit()
+        self.expiry_date.setStyleSheet(input_style)
+        self.expiry_date.setDate(default_date)
+        self.rack_location = QLineEdit()
+        self.rack_location.setStyleSheet(input_style)
+        self.batch = QLineEdit()
+        self.batch.setStyleSheet(input_style)
+        top_section_layout = QHBoxLayout()
+        top_section_layout.addLayout(photo_edit_row)
+        right_fields_layout = QVBoxLayout()
+        right_fields_layout.setSpacing(15)
+        owner_id_layout = QVBoxLayout()
+        owner_id_layout.addWidget(create_label("Owner ID:"))
+        owner_id_layout.addWidget(self.owner_id)
+        right_fields_layout.addLayout(owner_id_layout)
+        update_date_layout = QVBoxLayout()
+        update_date_layout.addWidget(create_label("Update Date:"))
+        update_date_layout.addWidget(self.update_date)
+        right_fields_layout.addLayout(update_date_layout)
+        branch_layout = QVBoxLayout()
+        branch_layout.addWidget(create_label("Branch:"))
+        branch_layout.addWidget(self.branch)
+        right_fields_layout.addLayout(branch_layout)
+        right_fields_layout.addStretch()
+        top_section_layout.addLayout(right_fields_layout)
+        white_layout.addLayout(top_section_layout, 0, 0, 1, 5)
+        product_sku_layout = QHBoxLayout()
+        product_name_layout = QVBoxLayout()
+        product_name_layout.addWidget(create_label("Product Name:"))
+        product_name_layout.addWidget(self.product_name)
+        product_sku_layout.addLayout(product_name_layout, 2)
+        sku_layout = QVBoxLayout()
+        sku_label = create_label("SKU:")
+        self.sku = QLineEdit()
+        self.sku.setFixedWidth(120)
+        self.sku.setStyleSheet(input_style)
+        sku_layout.addWidget(sku_label)
+        sku_layout.addWidget(self.sku)
+        product_sku_layout.addLayout(sku_layout, 1)
+        arrival_date_layout = QVBoxLayout()
+        arrival_date_layout.addWidget(create_label("Arrival Date:"))
+        arrival_date_layout.addWidget(self.arrival_date)
+        product_sku_layout.addLayout(arrival_date_layout, 1)
+        white_layout.addLayout(product_sku_layout, 1, 0, 1, 5)
+        description_layout = QVBoxLayout()
+        description_layout.addWidget(create_label("Description:"))
+        description_layout.addWidget(self.description)
+        white_layout.addLayout(description_layout, 2, 0, 1, 5)
+        dates_layout = QHBoxLayout()
+        manufacture_date_layout = QVBoxLayout()
+        manufacture_date_layout.addWidget(create_label("Manufacture Date:"))
+        manufacture_date_layout.addWidget(self.manufacture_date)
+        dates_layout.addLayout(manufacture_date_layout)
+        expiry_date_layout = QVBoxLayout()
+        expiry_date_layout.addWidget(create_label("Expiry Date:"))
+        expiry_date_layout.addWidget(self.expiry_date)
+        dates_layout.addLayout(expiry_date_layout)
+        white_layout.addLayout(dates_layout, 3, 0, 1, 5)
+        rack_batch_layout = QHBoxLayout()
+        rack_location_layout = QVBoxLayout()
+        rack_location_layout.addWidget(create_label("Rack Location:"))
+        rack_location_layout.addWidget(self.rack_location)
+        rack_batch_layout.addLayout(rack_location_layout)
+        batch_layout = QVBoxLayout()
+        batch_layout.addWidget(create_label("Batch:"))
+        batch_layout.addWidget(self.batch)
+        rack_batch_layout.addLayout(batch_layout)
+        white_layout.addLayout(rack_batch_layout, 4, 0, 1, 5)
+        submit_btn = QPushButton("Submit")
+        submit_btn.setStyleSheet(
+            "background-color: #FF7F7F; color: white; font-weight: bold; padding: 10px; border-radius: 20px; font-size: 14px;")
+        submit_btn.setCursor(Qt.PointingHandCursor)
+        submit_btn.setFixedWidth(120)
+        submit_layout = QHBoxLayout()
+        submit_layout.addStretch()
+        submit_layout.addWidget(submit_btn)
+        white_layout.addLayout(submit_layout, 5, 0, 1, 5)
+        frame_container = QHBoxLayout()
+        frame_container.addWidget(self.white_frame, alignment=Qt.AlignCenter)
+        main_layout.addLayout(frame_container)
+        self.setLayout(main_layout)
+
+        # Connect the submit button
+        submit_btn.clicked.connect(self.submit_product)
+
+    def upload_photo(self, event=None):
+        file_name, _ = QFileDialog.getOpenFileName(self, "Select Image", "", "Images (*.png *.jpg *.jpeg *.bmp)")
+        if file_name:
+            pixmap = QPixmap(file_name).scaled(300, 300, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
+            self.photo_label.setPixmap(pixmap)
+            self.photo_uploaded = True  # Set flag to True after successful upload
+            self.uploaded_image_path = file_name  # Store the file path
+
+    def create_custom_dateedit(self):
+        dateedit = QDateEdit()
+        dateedit.setCalendarPopup(True)
+        calendar = QCalendarWidget()
+        calendar.setNavigationBarVisible(True)
+        calendar.setFirstDayOfWeek(Qt.Monday)
+        calendar.setFixedSize(410, 220)
+        calendar.setStyleSheet("""
+            QCalendarWidget {
+                background-color: #FFF8F0;
+                border: 1px solid #8B5A2B;
+                border-radius: 8px;
+            }
+            QCalendarWidget QToolButton {
+                background-color: #FF7F7F;
+                color: white;
+                font-size: 15px;
+                height: 32px;
+                width: 80px;
+                border-radius: 6px;
+                margin: 2px;
+            }
+            QCalendarWidget QToolButton#qt_calendar_prevmonth,
+            QCalendarWidget QToolButton#qt_calendar_nextmonth {
+                background-color: #F8E5D7;
+                color: #5D3A00;
+                border-radius: 14px;
+                min-width: 28px;
+                min-height: 28px;
+            }
+            QCalendarWidget QMenu {
+                background-color: #F8E5D7;
+                color: #5D3A00;
+                font-size: 13px;
+            }
+            QCalendarWidget QWidget {
+                alternate-background-color: #F8E5D7;
+            }
+            QCalendarWidget QAbstractItemView:enabled {
+                font-size: 13px;
+                color: #5D3A00;
+                background-color: #FFFFFF;
+                selection-background-color: #FF7F7F;
+                selection-color: white;
+                border-radius: 4px;
+            }
+            QCalendarWidget QAbstractItemView:disabled {
+                color: #B0B0B0;
+            }
+            QCalendarWidget QSpinBox {
+                width: 54px;
+                font-size: 13px;
+                background: #FFF8F0;
+                border: 1px solid #8B5A2B;
+                border-radius: 4px;
+            }
+        """)
+        dateedit.setCalendarWidget(calendar)
+        dateedit.setDisplayFormat("dd MMMM yyyy")
+        return dateedit
+
+    def validate_inputs(self):
+        # Check if all required fields are filled
+        if not self.product_name.text().strip():
+            QMessageBox.warning(self, "Missing Information", "Product Name is required.")
+            return False
+        if not self.description.toPlainText().strip():
+            QMessageBox.warning(self, "Missing Information", "Description is required.")
+            return False
+        if not self.sku.text().strip():
+            QMessageBox.warning(self, "Missing Information", "SKU is required.")
+            return False
+        if not self.rack_location.text().strip():
+            QMessageBox.warning(self, "Missing Information", "Rack Location is required.")
+            return False
+        if not self.batch.text().strip():
+            QMessageBox.warning(self, "Missing Information", "Batch is required.")
+            return False
+
+        # Check if photo is uploaded
+        if not self.photo_uploaded:
+            QMessageBox.warning(self, "Missing Photo", "Please upload a product photo.")
+            return False
+
+        # All validations passed
+        return True
+
+    def submit_product(self):
+        if self.validate_inputs():
+            # Collect data
+            product_data = {
+                "product_image": self.uploaded_image_path if hasattr(self, 'uploaded_image_path') else None,
+                "product_name": self.product_name.text().strip(),
+                "description": self.description.toPlainText().strip(),
+                "branch": self.branch.text().strip(),
+                "arrival_date": self.arrival_date.date().toString("dd/MM/yyyy"),
+                "manufacture_date": self.manufacture_date.date().toString("dd/MM/yyyy"),
+                "expiry_date": self.expiry_date.date().toString("dd/MM/yyyy"),
+                "sku": self.sku.text().strip(),
+                "rack_location": self.rack_location.text().strip(),
+                "batch": self.batch.text().strip(),
+                "owner_id": self.owner_id.text().strip()
+            }
+
+            # Show processing dialog
+            self.processing_dialog = ProcessingDialog("Processing data...", self.window())
+            self.processing_dialog.open() # Use open() for non-blocking
+
+            # Use a timer to continue processing after the dialog is shown
+            QTimer.singleShot(100, lambda: self._process_and_show_review(product_data)) # Short delay
+
+        else:
+            QMessageBox.warning(self, "Missing Information", "Please fill up all the information")
+
+    def _process_and_show_review(self, product_data):
+        """Process product data, save to DB, and show review window."""
+        absolute_barcode_path = None # Initialize to None
+
+        try:
+            # Generate barcode and image
+            barcode_value = ''.join(random.choices(string.digits, k=12))
+            product_data["barcode"] = barcode_value
+            barcode_class = barcode.get_barcode_class('code128')
+            code128 = barcode_class(barcode_value, writer=ImageWriter())
+            os.makedirs("barcodes", exist_ok=True)
+            barcode_path = f"barcodes/{product_data['sku']}_{barcode_value}.png"
+
+            # --- Get barcode image data directly as bytes ---
+            barcode_image_bytes = None
+            try:
+                # Use ImageWriter to render the barcode directly to bytes
+                # Ensure the writer is set to output bytes (format='png')
+                from io import BytesIO # Import BytesIO
+                # Render the barcode to a Pillow Image object
+                pil_image = code128.render(writer_options={'format': 'png'}) # Render to PIL Image
+                # Save the Pillow Image to a bytes buffer
+                buffer = BytesIO()
+                pil_image.save(buffer, format='PNG') # Save PIL Image to buffer as PNG
+                barcode_image_bytes = buffer.getvalue() # Get bytes from the buffer
+                buffer.close() # Close the buffer
+
+                print("Barcode image data rendered to bytes successfully.") # Debug print
+                product_data["barcode_image_data"] = barcode_image_bytes # Store bytes for review window
+                # We still need the path for the database, even if not used for display here
+                absolute_barcode_path = os.path.abspath(barcode_path) # Keep the path calculation
+                product_data["barcode_image"] = absolute_barcode_path # Store path for database
+            except Exception as e:
+                print(f"Failed to render barcode image to bytes: {e}") # Debug print
+            # --- End of getting bytes ---
+
+            # --- Remove barcode_image_data before saving to DB ---
+            if "barcode_image_data" in product_data:
+                # Keep barcode_image_data for the review window, but don't save it to DB
+                pass # No action needed, it's handled in show_review_window
+            # --- End of remove ---
+
+            # Save product data to the database HERE
+            conn = sqlite3.connect("medical_system.db")
+            cursor = conn.cursor()
+
+            cursor.execute("""
+                           INSERT INTO Products (user_id, product_name, manufacture_date, expired_date, arrival_date,
+                                                 location, batch, barcode, barcode_image, sku, product_image)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                           """, (
+                               int(product_data["owner_id"]),
+                               product_data["product_name"],
+                               product_data["manufacture_date"],
+                               product_data["expiry_date"],
+                               product_data["arrival_date"],
+                               product_data["rack_location"],
+                               product_data["batch"],
+                               product_data["barcode"],
+                               product_data["barcode_image"], # Still save the path to DB
+                               product_data["sku"],
+                               product_data["product_image"]
+                           ))
+
+            # Get the product_id of the newly inserted product
+            product_id = cursor.lastrowid
+            product_data["product_id"] = product_id # Add product_id to data
+
+            conn.commit()
+            conn.close()
+
+            # Show review window with data that now includes product_id
+            self.show_review_window(product_data, self.processing_dialog) # Pass processing_dialog
+
+        except Exception as e:
+            # Close processing dialog before showing error
+            if hasattr(self, 'processing_dialog') and self.processing_dialog.isVisible():
+                 self.processing_dialog.reject()
+
+            QMessageBox.critical(
+                self,
+                "Database Error",
+                f"Failed to process product information: {str(e)}"
+            )
+            # If saving fails, perhaps clean up the generated barcode file?
+            if absolute_barcode_path and os.path.exists(absolute_barcode_path):
+                 try:
+                     os.remove(absolute_barcode_path)
+                 except Exception as cleanup_e:
+                     print(f"Failed to clean up barcode file: {cleanup_e}")
+
+    def show_review_window(self, product_data, processing_dialog): # Accept processing_dialog
+        # Create and show the review window
+        review_window = ProductReviewWindow(product_data, self.window(), processing_dialog) # Pass processing_dialog
+        review_window.exec_()  # Use exec_() to make it a modal dialog
+
+
+# --- Product Review Window ---
+class ProductReviewWindow(QDialog):
+    def __init__(self, product_data, parent=None, processing_dialog=None): # Accept processing_dialog
+        super().__init__(parent)
+        self.product_data = product_data  # Store product data for database saving
+        self.processing_dialog = processing_dialog # Store processing_dialog
+        self.setWindowTitle("Review Product Information")
+        self.setFixedSize(800, 710)  # Slightly increased width
+        self.setStyleSheet(
+            "background-color: #fff0e6; border: 1px solid #8B5A2B; border-radius: 10px;")  # Light peach background
+
+        self.initUI() # Initialize UI here
+
+    def initUI(self):
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(20, 15, 20, 20)
+        main_layout.setSpacing(15)
+
+        # Layout for title and close button
+        title_bar_layout = QHBoxLayout()
+
+        # Title with brown color and bigger font - no frame
+        title_label = QLabel("Review Product Information")
+        title_label.setFont(QFont("Arial", 20, QFont.Bold))
+        title_label.setStyleSheet("color: #5D3A00; background: transparent; border: none;")
+        title_label.setAlignment(Qt.AlignCenter)
+
+        # Close button (X) - red circle with white X
+        close_button = QPushButton("×")  # Unicode × character for better appearance
+        close_button.setFixedSize(30, 30)
+        close_button.setStyleSheet("""
+            QPushButton {
+                background-color: #FF5C5C;
+                color: white;
+                font-weight: bold;
+                font-size: 20px;
+                border-radius: 15px;
+                border: none;
+            }
+            QPushButton:hover {
+                background-color: #FF3B3B;
+            }
+        """)
+        close_button.clicked.connect(self.reject)  # Close dialog on click
+
+        title_bar_layout.addWidget(title_label)
+        title_bar_layout.addWidget(close_button, alignment=Qt.AlignRight)
+
+        main_layout.addLayout(title_bar_layout)
+
+        # Add a horizontal line separator
+        separator = QFrame()
+        separator.setFrameShape(QFrame.HLine)
+        separator.setFrameShadow(QFrame.Sunken)
+        separator.setStyleSheet("background-color: #8B5A2B; height: 2px;")
+        main_layout.addWidget(separator)
+
+        # Content area with product image and details - completely frameless
+        content_widget = QWidget()
+        content_widget.setStyleSheet("background: transparent; border: none;")
+        content_layout = QHBoxLayout(content_widget)
+        content_layout.setContentsMargins(20, 25, 20, 25)
+        content_layout.setSpacing(40)  # Increased spacing
+
+        # Left side - Product Image and Barcode
+        left_layout = QVBoxLayout()
+        left_layout.setAlignment(Qt.AlignTop | Qt.AlignHCenter)
+        left_layout.setSpacing(40) # Increased spacing
+        left_layout.setContentsMargins(5, 0, 5, 0)
+
+        # Product Image Label - no frame, bigger font
+        image_label = QLabel("Product Image:")
+        image_label.setFont(QFont("Arial", 12, QFont.Bold))
+        image_label.setStyleSheet("color: #5D3A00; background: transparent; border: none;")
+        left_layout.addWidget(image_label, alignment=Qt.AlignLeft)
+
+        # Product Image without frame or border
+        product_image_widget = self.create_image_widget(self.product_data.get("product_image")) # Use self.product_data
+        product_image_widget.setFixedSize(150, 150)  # Larger size
+        product_image_widget.setStyleSheet("border: none; background: transparent;")
+        left_layout.addWidget(product_image_widget, alignment=Qt.AlignHCenter)
+
+        # Barcode Label - no frame, bigger font
+        barcode_label = QLabel("Barcode:")
+        barcode_label.setFont(QFont("Arial", 12, QFont.Bold))
+        barcode_label.setStyleSheet("color: #5D3A00; background: transparent; border: none;")
+        left_layout.addWidget(barcode_label, alignment=Qt.AlignLeft)
+
+        # Barcode image in the 'Upload Photo' area
+        barcode_image_path = self.product_data.get("barcode_image") # Use self.product_data
+        barcode_image_label = self.create_image_widget(barcode_image_path)
+        barcode_image_label.setFixedWidth(150) # Match product image width
+        barcode_image_label.setStyleSheet("border: none; background: transparent;")
+        left_layout.addWidget(barcode_image_label, alignment=Qt.AlignHCenter)
+
+        # --- Check if barcode loaded and close processing dialog ---
+        if self.processing_dialog and self.processing_dialog.isVisible():
+            if barcode_image_label.pixmap() and not barcode_image_label.pixmap().isNull():
+                self.processing_dialog.accept() # Barcode loaded successfully
+            else:
+                self.processing_dialog.reject() # Barcode failed to load (will show error in label)
+        # --- End of check ---
+
+        # Right side - Product Details (no boxes)
+        details_layout = QFormLayout()
+        details_layout.setContentsMargins(10, 5, 5, 5)
+        details_layout.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        details_layout.setVerticalSpacing(20)  # Further increased spacing between rows
+        details_layout.setHorizontalSpacing(50)  # Increased horizontal spacing
+
+        # Add Product Details (order based on the image provided)
+        # Improved styling for labels and values - no frames and larger font
+        label_style = "color: #5D3A00; font-weight: bold; font-size: 14pt; background: transparent; border: none;"
+        value_style = "color: #333333; font-size: 14pt; background: transparent; border: none;"
+
+        def add_detail_row(layout, label_text, value_text):
+            label = QLabel(label_text)
+            label.setFont(QFont("Arial", 12, QFont.Bold))
+            label.setStyleSheet(label_style)
+            label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)  # Left align label
+
+            value = QLabel(value_text if value_text else "XXXX")
+            value.setFont(QFont("Arial", 10))
+            value.setStyleSheet(value_style)
+
+            layout.addRow(label, value)
+
+        add_detail_row(details_layout, "Product Name:", self.product_data.get("product_name")) # Use self.product_data
+        add_detail_row(details_layout, "Description:", self.product_data.get("description")) # Use self.product_data
+        add_detail_row(details_layout, "Branch:", self.product_data.get("branch")) # Use self.product_data
+        add_detail_row(details_layout, "Arrival Date:", self.product_data.get("arrival_date")) # Use self.product_data
+        add_detail_row(details_layout, "Manufacture Date:", self.product_data.get("manufacture_date")) # Use self.product_data
+        add_detail_row(details_layout, "Expiry Date:", self.product_data.get("expiry_date")) # Use self.product_data
+        add_detail_row(details_layout, "SKU:", self.product_data.get("sku")) # Use self.product_data
+        add_detail_row(details_layout, "Rack Location:", self.product_data.get("rack_location")) # Use self.product_data
+        add_detail_row(details_layout, "Batch:", self.product_data.get("batch")) # Use self.product_data
+
+        # Add layouts to content widget
+        content_layout.addLayout(left_layout, 1)
+        content_layout.addLayout(details_layout, 2)
+
+        # Add content widget to main layout
+        main_layout.addWidget(content_widget)
+
+        # Add Submit to Admin button with improved styling and larger font
+        submit_admin_btn = QPushButton("Submit to admin")
+        submit_admin_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #FF7F7F;
+                color: white;
+                font-weight: bold;
+                padding: 10px;
+                border-radius: 20px;
+                font-size: 16px;
+                border: none;
+            }
+            QPushButton:hover {
+                background-color: #FF6347;
+            }
+            QPushButton:pressed {
+                background-color: #E05046;
+            }
+        """)
+        submit_admin_btn.setCursor(Qt.PointingHandCursor)
+        submit_admin_btn.setFixedSize(200, 45)  # Larger button
+        submit_admin_btn.clicked.connect(self.save_to_database)  # Connect to save_to_database method
+
+        # Submit button layout
+        button_layout = QHBoxLayout()
+        button_layout.addStretch()
+        button_layout.addWidget(submit_admin_btn)
+        button_layout.addStretch()
+
+        main_layout.addLayout(button_layout)
+        main_layout.addSpacing(20)  # Add some space at the bottom
+
+        self.setLayout(main_layout) # Set the layout for the dialog
+
+    def create_image_widget(self, image_path):
+        image_widget = QLabel()
+        image_widget.setAlignment(Qt.AlignCenter)  # Ensure alignment is set from the start
+        image_widget.setWordWrap(True) # Allow text wrapping for error messages
+
+        print(f"create_image_widget called with path: {image_path}") # Debug print
+
+        # Check if the image path is provided or if barcode data is available
+        is_barcode = "barcode" in str(image_path).lower() if image_path else False
+        barcode_image_data = self.product_data.get("barcode_image_data") # Get barcode data
+        print(f"Is barcode path: {is_barcode}") # Debug print
+
+        if is_barcode and barcode_image_data:
+            # --- Attempt to load barcode directly from bytes ---
+            print("Attempting to load barcode directly from bytes.") # Debug print
+            pixmap = QPixmap()
+            if pixmap.loadFromData(barcode_image_data, "PNG"):
+                print("QPixmap loaded successfully from bytes.") # Debug print
+                # Scale to width 150 and a reduced height (approx 70% of previous target 70px = 49px, try 50), keep aspect ratio
+                scaled_pixmap = pixmap.scaled(150, 80, Qt.KeepAspectRatio, Qt.SmoothTransformation) # Adjusted scaling
+                image_widget.setPixmap(scaled_pixmap)
+                print("Barcode pixmap from bytes set on label.") # Debug print
+            else:
+                # QPixmap failed to load the barcode from bytes
+                print("QPixmap loading failed for barcode from bytes.") # Debug print
+                image_widget.setText("Barcode\nLoad Error")
+                image_widget.setFont(QFont("Arial", 10))
+                image_widget.setStyleSheet("color: red; font-style: italic; background: transparent; border: none;")
+            # --- End of direct load from bytes attempt ---
+
+        elif image_path:
+            # Attempt to load other images directly with QPixmap (Product Image) from file path
+            # We can still keep the exists check for non-barcode images for robustness,
+            # but the primary issue is with the barcode.
+            if os.path.exists(image_path): # Keep exists check for non-barcode images
+                print(f"File exists at path: {image_path}") # Debug print
+                print(f"Attempting to load image directly with QPixmap from: {image_path}") # Debug print
+                pixmap = QPixmap(image_path)
+                if not pixmap.isNull():
+                    print("QPixmap loaded successfully.") # Debug print
+                    # Scale for product image
+                    scaled_pixmap = pixmap.scaled(140, 140, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                    image_widget.setPixmap(scaled_pixmap)
+                    print("Product image pixmap set on label.") # Debug print
+                else:
+                    # QPixmap failed to load the image
+                    print("QPixmap loading failed.") # Debug print
+                    image_widget.setText("Image not found")
+                    image_widget.setFont(QFont("Arial", 14))
+                    image_widget.setStyleSheet("color: #888888; font-style: italic; background: transparent; border: none;")
+            else:
+                 # Non-barcode image path missing or file does not exist
+                print("Non-barcode image path missing or file does not exist.") # Debug print
+                image_widget.setText("Image not found") # Default for missing product image
+                image_widget.setFont(QFont("Arial", 14))
+                image_widget.setStyleSheet("color: #888888; font-style: italic; background: transparent; border: none;")
+
+        else:
+            # Handle cases where path is not provided at all
+            print("Image path is not provided.") # Debug print
+            # Decide what default text to show if the path itself is None or empty.
+            # Assuming this mostly happens for the optional product image initially.
+            image_widget.setText("Upload\nPhoto")
+            image_widget.setFont(QFont("Arial", 14))
+            image_widget.setStyleSheet("color: #666666; font-size: 18px; background: transparent; border: none;")
+            print("Set 'Upload Photo' text as path is missing.") # Debug print
+
+        return image_widget
+
+    def save_to_database(self):
+        """Create notification for admin and close the window"""
+        try:
+            # Connect to the database
+            conn = sqlite3.connect("medical_system.db")
+            cursor = conn.cursor()
+
+            # Retrieve product_id from stored data
+            product_id = self.product_data.get("product_id")
+            if product_id is None:
+                 QMessageBox.critical(self, "Error", "Product ID not found.")
+                 conn.close()
+                 return # Cannot create notification without product_id
+
+            # Create notification for admin
+            cursor.execute("""
+                           CREATE TABLE IF NOT EXISTS Notifications
+                           (
+                               notification_id
+                               INTEGER
+                               PRIMARY
+                               KEY
+                               AUTOINCREMENT,
+                               user_id
+                               INTEGER,
+                               product_id
+                               INTEGER,
+                               message
+                               TEXT,
+                               timestamp
+                               TEXT,
+                               is_read
+                               INTEGER
+                               DEFAULT
+                               0,
+                               FOREIGN
+                               KEY
+                           (
+                               user_id
+                           ) REFERENCES Users
+                           (
+                               user_id
+                           ),
+                               FOREIGN KEY
+                           (
+                               product_id
+                           ) REFERENCES Products
+                           (
+                               product_id
+                           )
+                               )
+                           """)
+
+            # Insert notification
+            current_time = time.strftime('%Y-%m-%d %H:%M:%S')
+            notification_message = f"New product '{self.product_data.get('product_name', 'N/A')}' awaiting approval" # Use .get with default
+
+            # Find admin users to notify
+            cursor.execute("SELECT user_id FROM Users WHERE role = 'admin'")
+            admin_ids = cursor.fetchall()
+
+            # Create notification for each admin
+            for admin_id in admin_ids:
+                cursor.execute("""
+                               INSERT INTO Notifications (user_id, product_id, message, timestamp)
+                               VALUES (?, ?, ?, ?)
+                               """, (admin_id[0], product_id, notification_message, current_time))
+
+            # Commit changes and close connection
+            conn.commit()
+            conn.close()
+
+            # Show success message for notification
+            QMessageBox.information(
+                self,
+                "Submitted",
+                "Product information submitted to admin for approval."
+            )
+
+            # Close the dialog
+            self.accept()
+
+        except Exception as e:
+            # Show error message if database operation fails
+            QMessageBox.critical(
+                self,
+                "Database Error",
+                f"Failed to create admin notification: {str(e)}"
+            )
+
+
+# === Notification System ===
+class NotificationSystem:
+    @staticmethod
+    def check_notifications(user_id, role):
+        """Check for notifications for the given user"""
+        try:
+            conn = sqlite3.connect("medical_system.db")
+            cursor = conn.cursor()
+
+            if role == 'admin':
+                # For admin users, check for product approval notifications
+                cursor.execute("""
+                               SELECT notification_id, message, timestamp, is_read, product_id
+                               FROM Notifications
+                               WHERE user_id = ? AND is_read = 0
+                               ORDER BY timestamp DESC
+                               """, (user_id,))
+
+                notifications = cursor.fetchall()
+                conn.close()
+                return notifications
+            else:
+                # For regular users, check for product status notifications
+                cursor.execute("""
+                               SELECT notification_id, message, timestamp, is_read, product_id
+                               FROM Notifications
+                               WHERE user_id = ? AND is_read = 0
+                               ORDER BY timestamp DESC
+                               """, (user_id,))
+
+                notifications = cursor.fetchall()
+                conn.close()
+                return notifications
+        except Exception as e:
+            print(f"Error checking notifications: {e}")
+            return []
+
+    @staticmethod
+    def mark_as_read(notification_id):
+        """Mark a notification as read"""
+        try:
+            conn = sqlite3.connect("medical_system.db")
+            cursor = conn.cursor()
+            cursor.execute("UPDATE Notifications SET is_read = 1 WHERE notification_id = ?", (notification_id,))
+            conn.commit()
+            conn.close()
+            return True
+        except Exception as e:
+            print(f"Error marking notification as read: {e}")
+            return False
+
+
+# === Toggle Switch ===
+class ToggleSwitch(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(60, 30)
+        self._checked = False
+
+        self._circle_position = 3
+        self.animation = QPropertyAnimation(self, b"circle_position", self)
+        self.animation.setDuration(200)
+        self.animation.setEasingCurve(QEasingCurve.InOutQuad)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+
+        # Background
+        if self._checked:
+            painter.setBrush(QColor("#00c853"))  # Green
+        else:
+            painter.setBrush(QColor("#cfd8dc"))  # Grey
+
+        painter.setPen(Qt.NoPen)
+        painter.drawRoundedRect(0, 0, self.width(), self.height(), 15, 15)
+
+        # Circle
+        painter.setBrush(Qt.white)
+        painter.drawEllipse(int(self._circle_position), 3, 24, 24)
+
+    def mousePressEvent(self, event):
+        self.toggle()
+        super().mousePressEvent(event)
+
+    def toggle(self):
+        self.setChecked(not self._checked)
+
+    def isChecked(self):
+        return self._checked
+
+    def setChecked(self, state):
+        if self._checked != state:
+            self._checked = state
+            self.animate_switch()
+
+    def animate_switch(self):
+        start_position = self._circle_position
+        end_position = self.width() - 27 if self._checked else 3
+        self.animation.setStartValue(start_position)
+        self.animation.setEndValue(end_position)
+        self.animation.start()
+
+    @pyqtProperty(int)
+    def circle_position(self):
+        return self._circle_position
+
+    @circle_position.setter
+    def circle_position(self, value):
+        self._circle_position = value
+        self.update()
+
+
+# --- Sidebar Button ---
+class SidebarButton(QPushButton):
+    def __init__(self, icon_path, tooltip_text, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(100, 100)  # Increased size
+        self.setIcon(QIcon(icon_path))
+        self.setIconSize(QSize(48, 48))  # Increased icon size
+        self.setToolTip(tooltip_text)
+        self.setCheckable(True)  # Make buttons checkable for selection state
+        self.default_style()
+
+    def default_style(self):
+        self.setStyleSheet("""
+            QPushButton {
+                background-color: transparent;
+                border: none;
+                border-radius: 8px; /* Make default slightly rounded */
+            }
+            QPushButton:hover {
+                background-color: #f5d2b6; /* Lighter shade on hover */
+                border-radius: 8px;
+            }
+            QPushButton:checked {
+                background-color: #fde8d8; /* Match sidebar background when selected */
+                border: none; /* Remove border on checked state */
+                border-left: 4px solid #7a4a1c; /* Left outline when selected */
+                border-right: 4px solid #7a4a1c; /* Right outline when selected */
+                border-radius: 0; /* Remove rounded corners when selected */
+            }
+            QPushButton:focus {
+                outline: none; /* Remove default focus outline */
+                /* border-left and border-right are now in :checked state */
+            }
+        """)
+
+
+# --- Main Window ---
+class OwnerMainWindow(QWidget):
+    def __init__(self, username, user_id, branch):
+        super().__init__()
+        self.setWindowTitle("Owner Dashboard")
+        self.setGeometry(100, 100, 1920, 1080)
+        self.setStyleSheet("background-color: #fde8d8;")
+        self.username = username
+        self.user_id = user_id
+        self.branch = branch
+        self.initUI()
+
+        # Connect the window's destroyed signal to quit the application
+        self.destroyed.connect(QApplication.quit)
+
+    def initUI(self):
+        # Main layout: horizontal, sidebar (buttons) + central content
+        main_layout = QHBoxLayout(self)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+
+        # Sidebar for navigation buttons
+        sidebar = QFrame()
+        sidebar.setFixedWidth(120)
+        sidebar.setStyleSheet("background-color: #fde8d8;")
+        sidebar_layout = QVBoxLayout(sidebar)
+        sidebar_layout.setContentsMargins(0, 40, 0, 0)
+        sidebar_layout.setSpacing(30)
+
+        # Navigation buttons (always visible)
+        btn_size = QSize(100, 100)  # Use size from SidebarButton class
+        icon_size = QSize(48, 48)  # Use icon size from SidebarButton class
+
+        # Use QButtonGroup to manage checkable state for navigation buttons
+        self.nav_button_group = QButtonGroup(self)
+        self.nav_button_group.setExclusive(True)  # Only one button can be checked at a time
+
+        nav_buttons_data = [
+            ("C:\\Kai Shuang\\2.png", "Logout", self.close, False),  # Logout is not checkable
+            ("C:\\Kai Shuang\\1.png", "Profile", self.show_profile, True),
+            ("C:\\Kai Shuang\\7.png", "Add Product", self.show_add_product, True),
+            ("C:\\Kai Shuang\\4.png", "History", lambda: None, True),
+            ("C:\\Kai Shuang\\8.png", "Chat", lambda: None, True)
+        ]
+
+        self.sidebar_buttons = {}
+        for path, tooltip, slot, is_checkable in nav_buttons_data:
+            btn = SidebarButton(path, tooltip)  # Use SidebarButton class
+            btn.setCheckable(is_checkable)
+            btn.clicked.connect(slot)
+
+            if is_checkable:
+                self.nav_button_group.addButton(btn)  # Add checkable buttons to group
+
+            sidebar_layout.addWidget(btn, alignment=Qt.AlignHCenter)
+            self.sidebar_buttons[tooltip] = btn
+
+        sidebar_layout.addStretch()
+
+        # Set the Profile button as initially checked
+        if "Profile" in self.sidebar_buttons:
+            self.sidebar_buttons["Profile"].setChecked(True)
+
+        # Central content area (profile/add product)
+        content_frame = QFrame()
+        content_layout = QVBoxLayout(content_frame)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(0)
+        self.stacked_layout = QStackedLayout()
+        self.profile_widget = ProfileWidget(self.username, self.user_id, self.branch)
+        self.product_form_widget = ProductFormWidget(self.user_id, self.branch)
+        self.stacked_layout.addWidget(self.profile_widget)
+        self.stacked_layout.addWidget(self.product_form_widget)
+        content_layout.addLayout(self.stacked_layout)
+        content_frame.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
+        main_layout.addWidget(sidebar)
+        main_layout.addWidget(content_frame)
+        self.setLayout(main_layout)
+        self.show_profile()
+
+    def show_profile(self):
+        self.stacked_layout.setCurrentWidget(self.profile_widget)
+
+    def show_add_product(self):
+        self.stacked_layout.setCurrentWidget(self.product_form_widget)
+
+    def closeEvent(self, event):
+        # This method is called when the window is closed
+        QApplication.quit()
+        event.accept()  # Accept the close event
+
+    def default_style(self):
+        return """
+            QPushButton {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #ffe5d0, stop:1 #f8cfa9);
+                border: none;
+                border-radius: 22px;
+                margin: 0;
+                box-shadow: 0 2px 12px rgba(160, 120, 80, 0.10);
+                transition: background 0.2s, transform 0.2s;
+            }
+            QPushButton:hover {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #ffd7b0, stop:1 #f7b97a);
+                box-shadow: 0 6px 24px rgba(160, 120, 80, 0.18);
+                transform: scale(1.06);
+            }
+            QPushButton:checked {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #d08b5b, stop:1 #b86a2a);
+                color: white;
+                box-shadow: 0 8px 32px rgba(208, 139, 91, 0.25);
+                transform: scale(1.10);
+            }
+             QPushButton:focus {
+                outline: 2px solid #7a4a1c; /* Rectangular outline */
+                border-radius: 0; /* Remove rounded corners for outline */
+            }
+        """
+
+
+if __name__ == "__main__":
+    app = QApplication(sys.argv)
+    # For testing, use dummy user info
+    username = "Kai Shuang"
+    user_id = 4
+    branch = "Raja Uda"
+    window = OwnerMainWindow(username, user_id, branch)
+    window.show()
+    sys.exit(app.exec_())
