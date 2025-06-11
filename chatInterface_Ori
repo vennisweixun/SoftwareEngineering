@@ -1,0 +1,1559 @@
+import sys
+import sqlite3
+import datetime
+from datetime import timezone, timedelta
+from PyQt5.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QTextEdit, QLineEdit, QPushButton, QLabel, QDialog, QFormLayout,
+    QMessageBox, QScrollArea, QFrame, QSplitter, QTableWidget,
+    QTableWidgetItem, QHeaderView, QGroupBox, QListWidget, QListWidgetItem
+)
+from PyQt5.QtCore import QTimer, Qt, pyqtSignal
+from PyQt5.QtGui import QFont, QTextCursor, QColor, QPalette
+
+# Malaysia timezone (UTC+8)
+MALAYSIA_TZ = timezone(timedelta(hours=8))
+
+# Database functions for chat interface
+def verify_user_login(cursor, username, password):
+    """Verify user login credentials"""
+    cursor.execute("""
+        SELECT u.user_id, u.username, r.role_name, u.email, u.phone_no, 
+               b.branch_name, u.branch_id, r.role_id, u.fullname
+        FROM users u
+        LEFT JOIN roles r ON u.role = r.role_id
+        LEFT JOIN branches b ON u.branch_id = b.branch_id
+        WHERE u.username = ? AND u.password = ?
+    """, (username, password))
+    
+    result = cursor.fetchone()
+    if result:
+        return {
+            'user_id': result[0],
+            'username': result[1],
+            'role_name': result[2],
+            'email': result[3],
+            'phone_no': result[4],
+            'branch_name': result[5],
+            'branch_id': result[6],
+            'role_id': result[7],
+            'fullname': result[8]
+        }
+    return None
+
+def get_all_messages(cursor, include_deleted=False):
+    """Get all messages from the message table - only admin and superadmin messages for global chat, excluding activity messages"""
+    cursor.execute("""
+        SELECT username, role, message, timestamp, message_id
+        FROM message
+        WHERE role IN ('admin', 'superadmin') 
+        AND message NOT LIKE '[ACTIVITY]%'
+        ORDER BY timestamp ASC
+    """)
+    return cursor.fetchall()
+
+def insert_message(cursor, user_id, username, role, role_id, message_text):
+    """Insert a new message into the message table"""
+    cursor.execute("""
+        INSERT INTO message (user_id, role_id, username, role, message, timestamp)
+        VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+    """, (user_id, role_id, username, role, message_text))
+
+def delete_message(cursor, message_id):
+    """Delete a specific message"""
+    cursor.execute("DELETE FROM message WHERE message_id = ?", (message_id,))
+
+def clear_all_messages(cursor):
+    """Clear all messages from the message table"""
+    cursor.execute("DELETE FROM message")
+
+def log_user_activity(cursor, user_id, username, role_id, role, activity, description):
+    """Log user activity in a separate activity log table"""
+    # Create activity_log table if it doesn't exist
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS activity_log (
+            log_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            username TEXT,
+            role_id INTEGER,
+            role TEXT,
+            activity TEXT,
+            description TEXT,
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users(user_id),
+            FOREIGN KEY (role_id) REFERENCES roles(role_id)
+        )
+    """)
+
+    cursor.execute("""
+        INSERT INTO activity_log (user_id, username, role_id, role, activity, description, timestamp)
+        VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+    """, (user_id, username, role_id, role, activity, description))
+
+def get_user_activity(cursor, limit=100):
+    """Get user activity from activity log table"""
+    cursor.execute("""
+        SELECT username, role, activity, description, timestamp
+        FROM activity_log
+        ORDER BY timestamp DESC
+        LIMIT ?
+    """, (limit,))
+    return cursor.fetchall()
+
+def get_all_users(cursor):
+    """Get all users from the users table"""
+    cursor.execute("""
+        SELECT u.user_id, u.username, r.role_name, u.fullname, u.email, u.phone_no, 
+               CASE WHEN u.user_id IS NOT NULL THEN 'Active' ELSE 'Inactive' END as status
+        FROM users u
+        LEFT JOIN roles r ON u.role = r.role_id
+        ORDER BY u.username
+    """)
+    return cursor.fetchall()
+
+def create_notification_table(cursor):
+    """Create notification table for tracking tagged messages"""
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS message_notifications (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            message_id INTEGER,
+            tagged_user_id INTEGER,
+            tagged_username TEXT,
+            is_read INTEGER DEFAULT 0,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (message_id) REFERENCES message (message_id)
+        )
+    """)
+
+def mark_user_login(cursor, user_id):
+    """Mark messages as read when user logs in (second login after message)"""
+    cursor.execute("""
+        UPDATE message_notifications 
+        SET is_read = 1 
+        WHERE tagged_user_id = ? AND is_read = 0
+    """, (user_id,))
+
+def get_unread_notifications(cursor, user_id):
+    """Get unread tagged message IDs for a user"""
+    cursor.execute("""
+        SELECT message_id FROM message_notifications 
+        WHERE tagged_user_id = ? AND is_read = 0
+    """, (user_id,))
+    return [row[0] for row in cursor.fetchall()]
+
+def create_notification_for_tags(cursor, message_id, message_text, sender_id):
+    """Create notifications for any tagged users in the message"""
+    import re
+
+    # Find all @username patterns
+    tag_pattern = r'@(\w+)'
+    tagged_users = re.findall(tag_pattern, message_text)
+
+    for username in tagged_users:
+        # Get user ID for the tagged username
+        cursor.execute("SELECT user_id FROM users WHERE username = ?", (username,))
+        result = cursor.fetchone()
+
+        if result and result[0] != sender_id:  # Don't notify self
+            cursor.execute("""
+                INSERT INTO message_notifications (message_id, tagged_user_id, tagged_username)
+                VALUES (?, ?, ?)
+            """, (message_id, result[0], username))
+
+def format_malaysia_time(timestamp_str=None):
+    """Format timestamp to Malaysia time"""
+    try:
+        if timestamp_str:
+            if 'T' in timestamp_str or '-' in timestamp_str:
+                dt = datetime.datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
+            else:
+                try:
+                    dt = datetime.datetime.strptime(timestamp_str, "%Y-%m-%d %H:%M:%S")
+                    dt = dt.replace(tzinfo=MALAYSIA_TZ)
+                except:
+                    dt = datetime.datetime.now(MALAYSIA_TZ)
+        else:
+            dt = datetime.datetime.now(MALAYSIA_TZ)
+
+        return dt.strftime("%Y-%m-%d %H:%M:%S")
+    except:
+        return datetime.datetime.now(MALAYSIA_TZ).strftime("%Y-%m-%d %H:%M:%S")
+
+def validate_tagged_users(cursor, message_text):
+    """Validate that all tagged users exist in the database"""
+    import re
+
+    # Find all @username patterns
+    tag_pattern = r'@(\w+)'
+    tagged_users = re.findall(tag_pattern, message_text)
+
+    invalid_users = []
+    valid_users = []
+
+    for username in tagged_users:
+        # Check if user exists
+        cursor.execute("SELECT username FROM users WHERE username = ?", (username,))
+        result = cursor.fetchone()
+
+        if result:
+            valid_users.append(username)
+        else:
+            invalid_users.append(username)
+
+    return valid_users, invalid_users
+
+class LoginDialog(QDialog):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Chat Application - Login")
+        self.setFixedSize(350, 250)
+        self.user_info = None
+
+        self.setStyleSheet("""
+            QDialog {
+                background-color: #f5f5f5;
+            }
+            QLineEdit {
+                border: 2px solid #ddd;
+                border-radius: 5px;
+                padding: 8px;
+                font-size: 14px;
+                background-color: white;
+            }
+            QLineEdit:focus {
+                border-color: #4CAF50;
+            }
+            QPushButton {
+                background-color: #4CAF50;
+                color: white;
+                border: none;
+                border-radius: 5px;
+                padding: 10px 20px;
+                font-weight: bold;
+                font-size: 14px;
+            }
+            QPushButton:hover {
+                background-color: #45a049;
+            }
+            QLabel {
+                font-size: 14px;
+                color: #333;
+            }
+        """)
+
+        self.setupUI()
+
+    def setupUI(self):
+        layout = QVBoxLayout()
+
+        # Title
+        title = QLabel("Medical Testing System Chat")
+        title.setAlignment(Qt.AlignCenter)
+        title.setFont(QFont("Arial", 16, QFont.Bold))
+        title.setStyleSheet("color: #2E7D32; margin: 10px;")
+        layout.addWidget(title)
+
+        # Form
+        form_layout = QFormLayout()
+
+        self.username_input = QLineEdit()
+        self.username_input.setPlaceholderText("Enter username")
+        form_layout.addRow("Username:", self.username_input)
+
+        self.password_input = QLineEdit()
+        self.password_input.setPlaceholderText("Enter password (numbers only)")
+        self.password_input.returnPressed.connect(self.login)
+        form_layout.addRow("Password:", self.password_input)
+
+        layout.addLayout(form_layout)
+
+        # Buttons
+        button_layout = QHBoxLayout()
+        login_btn = QPushButton("Login")
+        login_btn.clicked.connect(self.login)
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(self.reject)
+
+        button_layout.addWidget(login_btn)
+        button_layout.addWidget(cancel_btn)
+        layout.addLayout(button_layout)
+
+        # Info
+        info_label = QLabel("Note: Password must be numeric (INTEGER type)\nCreate users through the application interface")
+        info_label.setStyleSheet("color: #666; font-size: 10px; margin: 10px;")
+        info_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(info_label)
+
+        self.setLayout(layout)
+
+    def login(self):
+        username = self.username_input.text().strip()
+        password_text = self.password_input.text().strip()
+
+        if not username or not password_text:
+            QMessageBox.warning(self, "Error", "Please enter both username and password")
+            return
+
+        # Validate password is numeric
+        try:
+            password = int(password_text)
+        except ValueError:
+            QMessageBox.warning(self, "Error", "Password must be numeric (INTEGER type)")
+            return
+
+        print(f"🔍 Chat Login attempt for user: {username}")
+
+        # Connect to database and verify login
+        try:
+            conn = sqlite3.connect("testing_system.db", timeout=10.0)
+            cursor = conn.cursor()
+
+            user_info = verify_user_login(cursor, username, password)
+
+            if user_info:
+                # Add full_name for compatibility
+                user_info['full_name'] = user_info.get('fullname', user_info.get('username', 'Unknown'))
+                self.user_info = user_info
+
+                print(f"✓ Chat login successful for user: {username}")
+                print(f"  - Role: {user_info['role_name']}")
+                print(f"  - Full Name: {user_info['full_name']}")
+                print(f"🕘 Malaysia Time: {format_malaysia_time()}")
+
+                # Create notification table and track login for red dot removal
+                create_notification_table(cursor)
+
+                # Log user activity
+                log_user_activity(cursor, user_info['user_id'], username,
+                                user_info['role_id'], user_info['role_name'],
+                                "chat_login", f"User logged into chat system")
+                conn.commit()
+                conn.close()
+                self.accept()
+            else:
+                print(f"✗ Chat login failed for user: {username} - Invalid credentials")
+                conn.close()
+                QMessageBox.warning(self, "Login Failed", "Invalid username or password")
+
+        except sqlite3.Error as e:
+            print(f"✗ Database error during chat login: {str(e)}")
+            QMessageBox.critical(self, "Database Error", f"Database error: {str(e)}")
+        except Exception as e:
+            print(f"✗ Unexpected error during chat login: {str(e)}")
+            QMessageBox.critical(self, "Error", f"An unexpected error occurred: {str(e)}")
+
+class UserActivityDialog(QDialog):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("User Activity Log")
+        self.setFixedSize(700, 500)
+        self.setupUI()
+        self.load_activity()
+
+    def setupUI(self):
+        layout = QVBoxLayout()
+
+        self.activity_table = QTableWidget()
+        self.activity_table.setColumnCount(5)
+        self.activity_table.setHorizontalHeaderLabels(["Username", "Role", "Activity", "Description", "Timestamp"])
+        self.activity_table.horizontalHeader().setStretchLastSection(True)
+        layout.addWidget(self.activity_table)
+
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(self.accept)
+        layout.addWidget(close_btn)
+
+        self.setLayout(layout)
+
+    def load_activity(self):
+        conn = sqlite3.connect("testing_system.db")
+        cursor = conn.cursor()
+        activities = get_user_activity(cursor, 100)
+        conn.close()
+
+        self.activity_table.setRowCount(len(activities))
+        for row, activity in enumerate(activities):
+            # Parse activity message to extract activity and description
+            username, role, activity, description, timestamp = activity
+            if activity.startswith("[ACTIVITY]"):
+                parts = activity.split(":", 1)
+                activity_type = parts[0].replace("[ACTIVITY]", "").strip()
+                description = parts[1].strip() if len(parts) > 1 else ""
+
+                items = [username, role, activity_type, description, timestamp]
+            else:
+                items = [username, role, activity, description, timestamp]
+
+            for col, value in enumerate(items):
+                item = QTableWidgetItem(str(value))
+                self.activity_table.setItem(row, col, item)
+
+class UserManagementDialog(QDialog):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("User Management")
+        self.setFixedSize(800, 600)
+        self.setupUI()
+        self.load_users()
+
+    def setupUI(self):
+        layout = QVBoxLayout()
+
+        self.users_table = QTableWidget()
+        self.users_table.setColumnCount(7)
+        self.users_table.setHorizontalHeaderLabels(["ID", "Username", "Role", "Full Name", "Email", "Phone", "Status"])
+        self.users_table.horizontalHeader().setStretchLastSection(True)
+        layout.addWidget(self.users_table)
+
+        button_layout = QHBoxLayout()
+        refresh_btn = QPushButton("Refresh")
+        refresh_btn.clicked.connect(self.load_users)
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(self.accept)
+
+        button_layout.addWidget(refresh_btn)
+        button_layout.addWidget(close_btn)
+
+        layout.addLayout(button_layout)
+        self.setLayout(layout)
+
+    def load_users(self):
+        conn = sqlite3.connect("testing_system.db")
+        cursor = conn.cursor()
+        users = get_all_users(cursor)
+        conn.close()
+
+        self.users_table.setRowCount(len(users))
+        for row, user in enumerate(users):
+            for col, value in enumerate(user):
+                item = QTableWidgetItem(str(value) if value else "")
+                self.users_table.setItem(row, col, item)
+
+class PrivateMessageDialog(QDialog):
+    def __init__(self, sender_info, target_username, target_role, role_colors):
+        super().__init__()
+        self.sender_info = sender_info
+        self.target_username = target_username
+        self.target_role = target_role
+        self.role_colors = role_colors
+
+        self.setWindowTitle(f"Private Chat with {target_username}")
+        self.setFixedSize(600, 500)
+        self.setupUI()
+        self.load_private_messages()
+
+        # Auto-refresh private messages every 2 seconds
+        self.refresh_timer = QTimer()
+        self.refresh_timer.timeout.connect(self.load_private_messages)
+        self.refresh_timer.start(2000)
+
+    def setupUI(self):
+        layout = QVBoxLayout()
+
+        # Header
+        sender_role = self.sender_info.get('role_name', 'user').lower()
+        sender_color = self.role_colors.get(sender_role, '#666666')
+        target_color = self.role_colors.get(self.target_role.lower(), '#666666')
+
+        header_label = QLabel(f"Private conversation between {self.sender_info.get('username')} and {self.target_username}")
+        header_label.setStyleSheet(f"font-weight: bold; color: {sender_color}; padding: 10px; border-bottom: 2px solid {sender_color};")
+        layout.addWidget(header_label)
+
+        # Message display
+        self.pm_display = QTextEdit()
+        self.pm_display.setReadOnly(True)
+        self.pm_display.setMinimumHeight(120)  # Reduced height
+        self.pm_display.setMaximumHeight(150)  # Smaller max height
+        self.pm_display.setPlaceholderText("Private messages will appear here...")
+        self.pm_display.setStyleSheet("""
+            QTextEdit {
+                background-color: rgba(255, 255, 255, 0.8);
+                border: 2px solid #ddd;
+                border-radius: 8px;
+                padding: 8px;
+            }
+        """)
+        layout.addWidget(self.pm_display)
+
+        # Message input
+        input_layout = QHBoxLayout()
+        self.pm_input = QLineEdit()
+        self.pm_input.setPlaceholderText("Type your private message...")
+        self.pm_input.returnPressed.connect(self.send_private_message)
+
+        send_btn = QPushButton("Send")
+        send_btn.clicked.connect(self.send_private_message)
+        send_btn.setStyleSheet(f"background-color: {sender_color}; color: white; padding: 8px 16px; border: none; border-radius: 4px;")
+
+        input_layout.addWidget(self.pm_input)
+        input_layout.addWidget(send_btn)
+        layout.addLayout(input_layout)
+
+        # Close button
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(self.close_chat)
+        close_btn.setStyleSheet("background-color: #666; color: white; padding: 8px 16px; border: none; border-radius: 4px;")
+        layout.addWidget(close_btn)
+
+        self.setLayout(layout)
+
+    def load_private_messages(self):
+        """Load private messages between sender and target"""
+        try:
+            conn = sqlite3.connect("testing_system.db", timeout=10.0)
+            cursor = conn.cursor()
+
+            sender_username = self.sender_info.get('username')
+
+            # Get private messages between these two users
+            cursor.execute("""
+                SELECT sender_username, receiver_username, message_text, timestamp, sender_role
+                FROM private_messages 
+                WHERE (sender_username = ? AND receiver_username = ?) 
+                   OR (sender_username = ? AND receiver_username = ?)
+                ORDER BY timestamp ASC
+            """, (sender_username, self.target_username, self.target_username, sender_username))
+
+            messages = cursor.fetchall()
+            conn.close()
+
+            # Clear and rebuild display
+            self.pm_display.clear()
+
+            for message in messages:
+                sender, receiver, text, timestamp, sender_role = message
+
+                # Format timestamp to Malaysia time
+                time_str = format_malaysia_time(timestamp)
+
+                # Get role color
+                role_color = self.role_colors.get(sender_role.lower(), '#666666')
+
+                # Determine if this is from current user
+                is_current_user = (sender == sender_username)
+                align = "right" if is_current_user else "left"
+                bg_alpha = "25" if is_current_user else "15"
+
+                # Format message
+                formatted_message = (
+                    f"<div style='margin: 8px 0; padding: 10px; "
+                    f"border: 2px solid {role_color}; background-color: {role_color}{bg_alpha}; "
+                    f"border-radius: 8px; text-align: {align};'>"
+                    f"<div style='color: {role_color}; font-weight: bold; font-size: 11px; margin-bottom: 6px;'>"
+                    f"👤 {sender} → 👤 {receiver} <span style='float: right; color: #888; font-size: 10px;'>[{time_str}]</span>"
+                    f"</div>"
+                    f"<div style='color: #333; font-size: 14px; line-height: 1.4;'>{text}</div>"
+                    f"</div>"
+                )
+
+                self.pm_display.append(formatted_message)
+
+            # Scroll to bottom
+            scrollbar = self.pm_display.verticalScrollBar()
+            scrollbar.setValue(scrollbar.maximum())
+
+        except Exception as e:
+            print(f"Error loading private messages: {e}")
+
+    def send_private_message(self):
+        """Send a private message"""
+        message_text = self.pm_input.text().strip()
+        if not message_text:
+            return
+
+        try:
+            conn = sqlite3.connect("testing_system.db", timeout=10.0)
+            cursor = conn.cursor()
+
+            # Create private_messages table if it doesn't exist
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS private_messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    sender_user_id INTEGER,
+                    sender_username TEXT,
+                    receiver_username TEXT,
+                    sender_role TEXT,
+                    message_text TEXT,
+                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            # Insert private message
+            cursor.execute("""
+                INSERT INTO private_messages 
+                (sender_user_id, sender_username, receiver_username, sender_role, message_text)
+                VALUES (?, ?, ?, ?, ?)
+            """, (
+                self.sender_info.get('user_id'),
+                self.sender_info.get('username'),
+                self.target_username,
+                self.sender_info.get('role_name'),
+                message_text
+            ))
+
+            # Log activity
+            log_user_activity(cursor,
+                            self.sender_info.get('user_id'),
+                            self.sender_info.get('username'),
+                            self.sender_info.get('role_id'),
+                            self.sender_info.get('role_name'),
+                            "private_message_sent",
+                            f"Sent private message to {self.target_username}: {message_text[:30]}...")
+
+            conn.commit()
+            conn.close()
+
+            print(f"💬 Private message sent from {self.sender_info.get('username')} to {self.target_username}")
+
+            self.pm_input.clear()
+            self.load_private_messages()
+
+        except Exception as e:
+            print(f"Error sending private message: {e}")
+            QMessageBox.critical(self, "Error", f"Failed to send private message: {str(e)}")
+
+    def close_chat(self):
+        """Close the private chat dialog"""
+        if hasattr(self, 'refresh_timer'):
+            self.refresh_timer.stop()
+        self.accept()
+
+class ChatWindow(QMainWindow):
+    def __init__(self, user_info):
+        super().__init__()
+        self.user_info = user_info
+        self.private_chat_windows = {}  # Store private chat windows
+        self.unread_message_ids = []  # Track unread tagged messages
+        self.login_count = 0  # Track login count
+
+        # Define role colors and themes FIRST (before setupUI)
+        self.role_colors = {
+            'superadmin': '#FF9800',  # Orange - Highest authority
+            'admin': '#4CAF50',       # Green - Administrative
+            'owner': '#2196F3',       # Blue - Business owner
+            'tester': '#E91E63'       # Pink - Testing/Quality
+        }
+
+        # Secondary colors for gradients and hover effects
+        self.role_secondary_colors = {
+            'superadmin': '#F57C00',  # Darker orange
+            'admin': '#388E3C',       # Darker green
+            'owner': '#1976D2',       # Darker blue
+            'tester': '#C2185B'       # Darker pink
+        }
+
+        # Initialize notification system
+        self.init_notifications()
+
+        self.setupUI()
+        self.load_messages()
+        self.load_available_users()
+
+        # Auto-refresh messages and users every 3 seconds
+        self.refresh_timer = QTimer()
+        self.refresh_timer.timeout.connect(self.refresh_all)
+        self.refresh_timer.start(3000)
+
+    def init_notifications(self):
+        """Initialize notification system and create tables"""
+        try:
+            conn = sqlite3.connect("testing_system.db", timeout=10.0)
+            cursor = conn.cursor()
+
+            # Create notification table
+            create_notification_table(cursor)
+
+            # Get unread notifications for current user
+            user_id = self.user_info.get('user_id')
+            self.unread_message_ids = get_unread_notifications(cursor, user_id)
+
+            # Track login count - mark as read on second login
+            self.login_count += 1
+            if self.login_count >= 2:
+                mark_user_login(cursor, user_id)
+                conn.commit()
+                self.unread_message_ids = []  # Clear notifications
+
+            conn.close()
+            print(f"📬 Notification system initialized. Unread tagged messages: {len(self.unread_message_ids)}")
+            print(f"🕘 Session started at: {self.login_time}")
+
+        except Exception as e:
+            print(f"Error initializing notifications: {e}")
+
+    def refresh_all(self):
+        """Refresh both messages and user list"""
+        self.load_messages()
+        self.load_available_users()
+
+        # Refresh inline private messages if active
+        if hasattr(self, 'active_pm_user') and self.active_pm_user:
+            self.load_private_messages_inline()
+
+    def setupUI(self):
+        role_name = self.user_info.get('role_name', 'user').lower()
+        full_name = self.user_info.get('full_name', self.user_info.get('username', 'Unknown'))
+
+        self.setWindowTitle(f"✨ SE Project Chat - {role_name.title()} - {full_name}")
+
+        # Set window icon
+        self.setWindowIcon(self.style().standardIcon(self.style().SP_ComputerIcon))
+        self.setGeometry(100, 100, 900, 700)
+
+        # Apply role-based theme
+        role_color = self.role_colors.get(role_name, '#4CAF50')
+        role_secondary = self.role_secondary_colors.get(role_name, '#45a049')
+
+        print(f"🎨 Applying {role_name.upper()} color theme: {role_color}")
+        print(f"   Chat window opened for: {full_name} ({role_name.title()})")
+
+        self.setStyleSheet(f"""
+            QMainWindow {{
+                background: qlineargradient(x1: 0, y1: 0, x2: 1, y2: 1,
+                    stop: 0 #f8f9fa, stop: 1 #e9ecef);
+                color: #212529;
+            }}
+            QTextEdit {{
+                border: 1px solid #dee2e6;
+                border-radius: 12px;
+                background-color: rgba(255, 255, 255, 0.95);
+                font-family: 'Segoe UI', 'San Francisco', Arial, sans-serif;
+                font-size: 14px;
+                padding: 16px;
+                selection-background-color: {role_color}30;
+                box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+            }}
+            QLineEdit {{
+                border: 1px solid #ced4da;
+                border-radius: 8px;
+                padding: 12px 16px;
+                font-size: 14px;
+                background-color: rgba(255, 255, 255, 0.9);
+                font-family: 'Segoe UI', 'San Francisco', Arial, sans-serif;
+                transition: all 0.2s ease;
+            }}
+            QLineEdit:focus {{
+                border: 2px solid {role_color};
+                background-color: white;
+                box-shadow: 0 0 0 3px {role_color}20;
+                outline: none;
+            }}
+            QPushButton {{
+                background: qlineargradient(x1: 0, y1: 0, x2: 0, y2: 1,
+                    stop: 0 {role_color}, stop: 1 {role_secondary});
+                color: white;
+                border: none;
+                border-radius: 8px;
+                padding: 12px 24px;
+                font-weight: 600;
+                font-size: 14px;
+                font-family: 'Segoe UI', 'San Francisco', Arial, sans-serif;
+                min-width: 90px;
+                box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15);
+            }}
+            QPushButton:hover {{
+                background: qlineargradient(x1: 0, y1: 0, x2: 0, y2: 1,
+                    stop: 0 {role_secondary}, stop: 1 {role_color});
+                transform: translateY(-1px);
+                box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+            }}
+            QPushButton:pressed {{
+                transform: translateY(0px);
+                box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+            }}
+            QPushButton:disabled {{
+                background: #e9ecef;
+                color: #6c757d;
+                box-shadow: none;
+            }}
+            QLabel {{
+                font-size: 14px;
+                color: #495057;
+                font-family: 'Segoe UI', 'San Francisco', Arial, sans-serif;
+                font-weight: 500;
+            }}
+            QGroupBox {{
+                font-weight: 600;
+                border: 1px solid #dee2e6;
+                border-radius: 12px;
+                margin: 8px 0px;
+                padding-top: 20px;
+                background: rgba(255, 255, 255, 0.9);
+                font-family: 'Segoe UI', 'San Francisco', Arial, sans-serif;
+                box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+            }}
+            QGroupBox::title {{
+                subcontrol-origin: margin;
+                left: 16px;
+                padding: 8px 16px;
+                color: white;
+                font-size: 14px;
+                font-weight: 600;
+                background: qlineargradient(x1: 0, y1: 0, x2: 1, y2: 0,
+                    stop: 0 {role_color}, stop: 1 {role_secondary});
+                border: none;
+                border-radius: 6px;
+                box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+            }}
+            QListWidget {{
+                border: 1px solid #dee2e6;
+                border-radius: 8px;
+                background-color: rgba(255, 255, 255, 0.95);
+                font-family: 'Segoe UI', 'San Francisco', Arial, sans-serif;
+                font-size: 13px;
+                alternate-background-color: #f8f9fa;
+            }}
+            QListWidget::item {{
+                padding: 10px;
+                border-bottom: 1px solid #f1f3f4;
+                border-radius: 4px;
+                margin: 2px;
+            }}
+            QListWidget::item:selected {{
+                background: qlineargradient(x1: 0, y1: 0, x2: 1, y2: 0,
+                    stop: 0 {role_color}20, stop: 1 {role_color}10);
+                border: 1px solid {role_color}40;
+            }}
+            QListWidget::item:hover {{
+                background-color: {role_color}10;
+                border: 1px solid {role_color}30;
+            }}
+        """)
+
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+
+        # Main layout
+        main_layout = QVBoxLayout()
+
+        # Header with user info
+        header_layout = QHBoxLayout()
+        user_label = QLabel(f"Logged in as: {role_name.title()} - {full_name}")
+        user_label.setFont(QFont("Arial", 12, QFont.Bold))
+        user_label.setStyleSheet(f"color: {role_color}; padding: 10px;")
+
+        header_layout.addWidget(user_label)
+        header_layout.addStretch()
+
+        # Role-specific buttons
+        if role_name == 'superadmin':
+            clear_chat_btn = QPushButton("Clear All Chat")
+            clear_chat_btn.clicked.connect(self.clear_all_chat)
+            header_layout.addWidget(clear_chat_btn)
+
+            activity_btn = QPushButton("User Activity")
+            activity_btn.clicked.connect(self.view_user_activity)
+            header_layout.addWidget(activity_btn)
+
+            manage_users_btn = QPushButton("Manage Users")
+            manage_users_btn.clicked.connect(self.manage_users)
+            header_layout.addWidget(manage_users_btn)
+
+        elif role_name == 'admin':
+            refresh_btn = QPushButton("Refresh")
+            refresh_btn.clicked.connect(self.refresh_all)
+            header_layout.addWidget(refresh_btn)
+
+        main_layout.addLayout(header_layout)
+
+        # Main content with horizontal split
+        content_layout = QHBoxLayout()
+
+        # Left side - Chat area (2/3 of space)
+        left_widget = QWidget()
+        left_layout = QVBoxLayout()
+        left_widget.setLayout(left_layout)
+
+        # Chat display area
+        chat_group = QGroupBox("Global Chat Room")
+        chat_layout = QVBoxLayout()
+
+        self.chat_display = QTextEdit()
+        self.chat_display.setReadOnly(True)
+        self.chat_display.setMinimumHeight(350)
+        chat_layout.addWidget(self.chat_display)
+
+        chat_group.setLayout(chat_layout)
+        left_layout.addWidget(chat_group)
+
+        # Message input area (only for admin and superadmin)
+        if role_name in ['admin', 'superadmin']:
+            input_group = QGroupBox("Send Public Message")
+            input_layout = QVBoxLayout()
+
+            # Tag helper
+            tag_info = QLabel("💡 Tip: Use @username to tag users (e.g., @john)")
+            tag_info.setStyleSheet("color: #666; font-size: 14px; font-style: italic; margin: 5px;")
+            input_layout.addWidget(tag_info)
+
+            msg_layout = QHBoxLayout()
+            self.message_input = QLineEdit()
+            self.message_input.setPlaceholderText("Type your message here... (use @username to tag)")
+            self.message_input.returnPressed.connect(self.send_message)
+
+            send_btn = QPushButton("Send")
+            send_btn.clicked.connect(self.send_message)
+
+            msg_layout.addWidget(self.message_input)
+            msg_layout.addWidget(send_btn)
+            input_layout.addLayout(msg_layout)
+
+            input_group.setLayout(input_layout)
+            left_layout.addWidget(input_group)
+        else:
+            # Show read-only message for owner and tester
+            readonly_label = QLabel("You can view messages but cannot send messages in the public chat room.")
+            readonly_label.setStyleSheet("color: #666; font-style: italic; padding: 10px;")
+            readonly_label.setAlignment(Qt.AlignCenter)
+            left_layout.addWidget(readonly_label)
+
+        content_layout.addWidget(left_widget, 2)
+
+        # Right side - Users and Private Chat (1/3 of space)
+        right_widget = QWidget()
+        right_layout = QVBoxLayout()
+        right_widget.setLayout(right_layout)
+
+        # Users list with search
+        users_group = QGroupBox("All Users")
+        users_layout = QVBoxLayout()
+
+        # Search bar
+        search_layout = QHBoxLayout()
+        search_label = QLabel("🔍 Search:")
+        search_label.setStyleSheet("font-size: 14px; color: #666;")
+
+        self.user_search = QLineEdit()
+        self.user_search.setPlaceholderText("🔍 Search users...")
+        self.user_search.textChanged.connect(self.search_users)
+        self.user_search.setStyleSheet("""
+            font-size: 14px; 
+            padding: 10px 14px; 
+            border: 1px solid #ced4da;
+            border-radius: 20px;
+            background-color: rgba(255, 255, 255, 0.9);
+            color: #495057;
+        """)
+
+        search_layout.addWidget(search_label)
+        search_layout.addWidget(self.user_search)
+        users_layout.addLayout(search_layout)
+
+        # Users list
+        self.users_list = QListWidget()
+        self.users_list.itemClicked.connect(self.start_private_chat)
+        self.users_list.setMaximumHeight(300)  # Taller user list as requested
+        users_layout.addWidget(self.users_list)
+
+        pm_info = QLabel("💬 Click a user to start private messaging")
+        pm_info.setStyleSheet("color: #666; font-size: 14px; font-style: italic; margin: 5px;")
+        users_layout.addWidget(pm_info)
+
+        users_group.setLayout(users_layout)
+        right_layout.addWidget(users_group)
+
+        # Private message area - Make it larger
+        if role_name in ['admin', 'superadmin', 'owner', 'tester']:  # All users can receive PMs
+            pm_group = QGroupBox("Private Messages")
+            pm_layout = QVBoxLayout()
+
+            # Active conversation indicator at top - smaller
+            self.active_pm_label = QLabel("Select a user to start messaging")
+            self.active_pm_label.setStyleSheet("color: #888; font-size: 10px; padding: 2px 4px; border-bottom: 1px solid #eee;")
+            self.active_pm_label.setAlignment(Qt.AlignLeft)
+            pm_layout.addWidget(self.active_pm_label)
+
+            # Private message display - make it bigger
+            self.pm_display = QTextEdit()
+            self.pm_display.setReadOnly(True)
+            self.pm_display.setMinimumHeight(200)  # Increased from 120
+            self.pm_display.setMaximumHeight(250)  # Increased from 150
+            self.pm_display.setPlaceholderText("Private messages will appear here...")
+            self.pm_display.setStyleSheet("""
+                QTextEdit {
+                    background-color: rgba(255, 255, 255, 0.8);
+                    border: 2px solid #ddd;
+                    border-radius: 8px;
+                    padding: 8px;
+                }
+            """)
+            pm_layout.addWidget(self.pm_display)
+
+            # Private message input area - make it smaller
+            pm_input_layout = QVBoxLayout()
+
+            # Multi-line input field
+            self.pm_input = QTextEdit()
+            self.pm_input.setPlaceholderText("Type private message...")
+            self.pm_input.setEnabled(False)  # Disabled until user is selected
+            self.pm_input.setMinimumHeight(50)  # Reduced from 80
+            self.pm_input.setMaximumHeight(70)  # Reduced from 120
+            self.pm_input.setStyleSheet("""
+                QTextEdit {
+                    border: 2px solid #ccc;
+                    border-radius: 8px;
+                    padding: 8px;
+                    font-size: 14px;
+                    background-color: rgba(255, 255, 255, 0.9);
+                }
+                QTextEdit:focus {
+                    border-color: #4CAF50;
+                }
+            """)
+            pm_input_layout.addWidget(self.pm_input)
+
+            # Send button below the input
+            pm_send_btn = QPushButton("Send Private Message")
+            pm_send_btn.clicked.connect(self.send_private_message_inline)
+            pm_send_btn.setEnabled(False)  # Disabled until user is selected
+            self.pm_send_btn = pm_send_btn
+            pm_input_layout.addWidget(pm_send_btn)
+
+            pm_layout.addLayout(pm_input_layout)
+            pm_group.setLayout(pm_layout)
+            right_layout.addWidget(pm_group)
+
+            # Initialize private messaging variables
+            self.active_pm_user = None
+            self.active_pm_role = None
+
+        content_layout.addWidget(right_widget, 1)
+        main_layout.addLayout(content_layout)
+
+        central_widget.setLayout(main_layout)
+
+    def load_messages(self):
+        """Load and display all messages"""
+        conn = sqlite3.connect("testing_system.db")
+        cursor = conn.cursor()
+
+        # Admin and superadmin can see deleted messages
+        role_name = self.user_info.get('role_name', 'user')
+        include_deleted = role_name in ['admin', 'superadmin']
+        messages = get_all_messages(cursor, include_deleted)
+        conn.close()
+
+        # Save current scroll position
+        scrollbar = self.chat_display.verticalScrollBar()
+        scroll_position = scrollbar.value()
+        was_at_bottom = scroll_position == scrollbar.maximum()
+
+        # Clear and rebuild chat display
+        self.chat_display.clear()
+
+        # Display all messages in chat bubble format
+        for message in messages:
+            username, role, text, timestamp, message_id = message
+
+            # Format timestamp to Malaysia time
+            time_str = format_malaysia_time(timestamp)
+
+            # Get role color
+            role_color = self.role_colors.get(role.lower(), '#666666')
+
+            # Role icons
+            role_icons = {
+                'superadmin': '👑',
+                'admin': '📢',
+                'owner': '🏢',
+                'tester': '🧪'
+            }
+            role_icon = role_icons.get(role.lower(), '👤')
+
+            # Check if this message has unread tags for current user
+            current_username = self.user_info.get('username', '').lower()
+            has_unread_tag = (message_id in self.unread_message_ids and
+                            f"@{current_username}" in text.lower())
+
+            # Process tags in the message
+            processed_text = self.process_tags(text)
+
+            # Add red dot for tagged messages
+            notification_indicator = "🔴 " if has_unread_tag else ""
+
+            # Chat bubble styling - all messages aligned left with role color
+            bubble_style = (
+                f"background: linear-gradient(135deg, {role_color}15 0%, {role_color}08 100%); "
+                f"color: black; text-align: left; max-width: 80%; "
+                f"border: 2px solid {role_color}30; border-radius: 15px; "
+                f"box-shadow: 0 2px 8px rgba(0,0,0,0.1);"
+            )
+            username_style = f"color: {role_color}; font-weight: 700;"
+            time_style = f"color: #666; font-weight: 500;"
+
+            # Format message in sequence: username, timestamp, message
+            formatted_message = (
+                f"<div style='margin: 10px 0; padding: 12px 16px; {bubble_style}'>"
+                f"<div style='{username_style} font-size: 13px; margin-bottom: 2px;'>"
+                f"{notification_indicator}{role_icon} {username}"
+                f"</div>"
+                f"<div style='{time_style} font-size: 11px; margin-bottom: 8px;'>{time_str}</div>"
+                f"<div style='font-size: 14px; line-height: 1.5; color: black;'>{processed_text}</div>"
+                f"</div>"
+            )
+
+            self.chat_display.append(formatted_message)
+
+        # Restore scroll position or scroll to bottom
+        if was_at_bottom:  # Auto-scroll if user was at bottom
+            scrollbar.setValue(scrollbar.maximum())
+        else:
+            scrollbar.setValue(scroll_position)
+
+    def process_tags(self, message):
+        """Process @username tags in messages"""
+        import re
+
+        # Find all @username patterns
+        tag_pattern = r'@(\w+)'
+
+        def replace_tag(match):
+            username = match.group(1)
+            return f"<span style='background: linear-gradient(90deg, #FF6B35, #F7931E); color: green; padding: 4px 8px; border-radius: 8px; font-weight: 700; font-size: 13px; box-shadow: 0 2px 6px rgba(255,107,53,0.4); border: 1px solid rgba(255,107,53,0.6);'>@{username}</span>"
+
+        return re.sub(tag_pattern, replace_tag, message)
+
+    def load_available_users(self):
+        """Load list of available users for private messaging"""
+        try:
+            conn = sqlite3.connect("testing_system.db", timeout=10.0)
+            cursor = conn.cursor()
+
+            # Get all users except current user
+            cursor.execute("""
+                SELECT u.username, r.role_name, u.fullname 
+                FROM users u 
+                JOIN roles r ON u.role = r.role_id 
+                WHERE u.username != ?
+                ORDER BY r.role_name, u.username
+            """, (self.user_info.get('username'),))
+
+            users = cursor.fetchall()
+            conn.close()
+
+            # Store all users for search functionality
+            self.all_users = users
+
+            # Update users list
+            if hasattr(self, 'users_list'):
+                self.populate_users_list(users)
+
+        except Exception as e:
+            print(f"Error loading users: {e}")
+
+    def populate_users_list(self, users):
+        """Populate the users list with given users"""
+        self.users_list.clear()
+        for username, role_name, fullname in users:
+            role_color = self.role_colors.get(role_name.lower(), '#666666')
+
+            # Use 👤 icon for all users as requested
+            icon = '👤'
+
+            # Format: username (fullname) - role
+            display_name = fullname if fullname else username
+            item_text = f"{icon} {username} ({display_name}) - {role_name.title()}"
+            item = QListWidgetItem(item_text)
+            item.setData(Qt.UserRole, {'username': username, 'role_name': role_name, 'fullname': fullname})
+
+            # Set font size
+            font = item.font()
+            font.setPointSize(10)
+            item.setFont(font)
+
+            self.users_list.addItem(item)
+
+    def search_users(self):
+        """Filter users based on search text"""
+        search_text = self.user_search.text().strip().lower()
+
+        if not search_text:
+            # Show all users if search is empty
+            if hasattr(self, 'all_users'):
+                self.populate_users_list(self.all_users)
+        else:
+            # Filter users based on search text
+            if hasattr(self, 'all_users'):
+                filtered_users = []
+                for username, role_name, fullname in self.all_users:
+                    # Search in username and fullname
+                    if (search_text in username.lower() or
+                        (fullname and search_text in fullname.lower())):
+                        filtered_users.append((username, role_name, fullname))
+
+                self.populate_users_list(filtered_users)
+
+    def start_private_chat(self, item):
+        """Start a private chat with selected user"""
+        user_data = item.data(Qt.UserRole)
+        target_username = user_data['username']
+        target_role = user_data['role_name']
+
+        # Check if user can send private messages
+        current_role = self.user_info.get('role_name', 'user').lower()
+        if current_role not in ['admin', 'superadmin', 'owner', 'tester']:
+            QMessageBox.warning(self, "Access Denied", "You don't have permission to send private messages")
+            return
+
+        # Activate inline private messaging
+        self.activate_private_chat(target_username, target_role)
+
+    def activate_private_chat(self, target_username, target_role):
+        """Activate private messaging in the inline area"""
+        self.active_pm_user = target_username
+        self.active_pm_role = target_role
+
+        # Update UI to show active conversation
+        if hasattr(self, 'active_pm_label'):
+            role_color = self.role_colors.get(target_role.lower(), '#666')
+            self.active_pm_label.setText(f"Chat with {target_username} ({target_role.title()})")
+            self.active_pm_label.setStyleSheet("color: #888; font-size: 10px; padding: 2px 4px; border-bottom: 1px solid #eee;")
+
+        # Enable input controls
+        if hasattr(self, 'pm_input'):
+            self.pm_input.setEnabled(True)
+            self.pm_input.setPlaceholderText(f"Type message to {target_username}...")
+            self.pm_send_btn.setEnabled(True)
+
+        # Load private messages for this conversation
+        self.load_private_messages_inline()
+
+        print(f"💬 Activated private chat with {target_username} ({target_role})")
+
+    def load_private_messages_inline(self):
+        """Load private messages for active conversation in inline area"""
+        if not self.active_pm_user or not hasattr(self, 'pm_display'):
+            return
+
+        try:
+            conn = sqlite3.connect("testing_system.db", timeout=10.0)
+            cursor = conn.cursor()
+
+            sender_username = self.user_info.get('username')
+
+            # Get private messages between current user and active user
+            cursor.execute("""
+                SELECT sender_username, receiver_username, message_text, timestamp, sender_role
+                FROM private_messages 
+                WHERE (sender_username = ? AND receiver_username = ?) 
+                   OR (sender_username = ? AND receiver_username = ?)
+                ORDER BY timestamp ASC
+                LIMIT 20
+            """, (sender_username, self.active_pm_user, self.active_pm_user, sender_username))
+
+            messages = cursor.fetchall()
+            conn.close()
+
+            # Clear and rebuild private message display
+            self.pm_display.clear()
+
+            if not messages:
+                self.pm_display.setPlaceholderText(f"No messages with {self.active_pm_user} yet. Start the conversation!")
+                return
+
+            for message in messages:
+                sender, receiver, text, timestamp, sender_role = message
+
+                # Format timestamp to Malaysia time
+                time_str = format_malaysia_time(timestamp)
+
+                # Get role color
+                role_color = self.role_colors.get(sender_role.lower(), '#666666')
+
+                # Determine if this is from current user
+                is_current_user = (sender == sender_username)
+                align = "right" if is_current_user else "left"
+                bg_alpha = "25" if is_current_user else "15"
+
+                # Format message like global chat - username, timestamp, message
+                # Get role icon
+                role_icons = {
+                    'superadmin': '👑',
+                    'admin': '📢',
+                    'owner': '🏢',
+                    'tester': '🧪'
+                }
+                role_icon = role_icons.get(sender_role.lower(), '👤')
+                
+                # Chat bubble styling - all messages aligned left with role color
+                bubble_style = (
+                    f"background: linear-gradient(135deg, {role_color}15 0%, {role_color}08 100%); "
+                    f"color: black; text-align: left; max-width: 80%; "
+                    f"border: 2px solid {role_color}30; border-radius: 15px; "
+                    f"box-shadow: 0 2px 8px rgba(0,0,0,0.1);"
+                )
+                username_style = f"color: {role_color}; font-weight: 700;"
+                time_style = f"color: #666; font-weight: 500;"
+
+                # Format message in sequence: username, timestamp, message
+                formatted_message = (
+                    f"<div style='margin: 10px 0; padding: 12px 16px; {bubble_style}'>"
+                    f"<div style='{username_style} font-size: 13px; margin-bottom: 2px;'>"
+                    f"{role_icon} {sender}"
+                    f"</div>"
+                    f"<div style='{time_style} font-size: 11px; margin-bottom: 8px;'>{time_str}</div>"
+                    f"<div style='font-size: 14px; line-height: 1.5; color: black;'>{text}</div>"
+                    f"</div>"
+                )
+                
+                self.pm_display.append(formatted_message)
+            
+            # Scroll to bottom
+            scrollbar = self.pm_display.verticalScrollBar()
+            scrollbar.setValue(scrollbar.maximum())
+            
+        except Exception as e:
+            print(f"Error loading inline private messages: {e}")
+    
+    def send_private_message_inline(self):
+        """Send a private message from the inline area"""
+        if not self.active_pm_user or not hasattr(self, 'pm_input'):
+            return
+        
+        message_text = self.pm_input.toPlainText().strip()
+        if not message_text:
+            return
+        
+        try:
+            conn = sqlite3.connect("testing_system.db", timeout=10.0)
+            cursor = conn.cursor()
+            
+            # Create private_messages table if it doesn't exist
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS private_messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    sender_user_id INTEGER,
+                    sender_username TEXT,
+                    receiver_username TEXT,
+                    sender_role TEXT,
+                    message_text TEXT,
+                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            
+            # Insert private message
+            cursor.execute("""
+                INSERT INTO private_messages 
+                (sender_user_id, sender_username, receiver_username, sender_role, message_text)
+                VALUES (?, ?, ?, ?, ?)
+            """, (
+                self.user_info.get('user_id'),
+                self.user_info.get('username'),
+                self.active_pm_user,
+                self.user_info.get('role_name'),
+                message_text
+            ))
+            
+            # Log activity
+            log_user_activity(cursor, 
+                            self.user_info.get('user_id'), 
+                            self.user_info.get('username'),
+                            self.user_info.get('role_id'), 
+                            self.user_info.get('role_name'),
+                            "private_message_sent", 
+                            f"Sent private message to {self.active_pm_user}: {message_text[:30]}...")
+            
+            conn.commit()
+            conn.close()
+            
+            print(f"💬 Inline private message sent to {self.active_pm_user}: {message_text[:30]}...")
+            
+            self.pm_input.clear()
+            self.load_private_messages_inline()
+            
+        except Exception as e:
+            print(f"Error sending inline private message: {e}")
+            QMessageBox.critical(self, "Error", f"Failed to send private message: {str(e)}")
+    
+    def send_message(self):
+        """Send a new message"""
+        if not hasattr(self, 'message_input'):
+            return
+        
+        message_text = self.message_input.text().strip()
+        if not message_text:
+            return
+        
+        # Check if user has permission to tag (admin or superadmin)
+        role_name = self.user_info.get('role_name', 'user').lower()
+        if role_name in ['admin', 'superadmin'] and '@' in message_text:
+            # Validate tagged users before sending
+            conn = sqlite3.connect("testing_system.db")
+            cursor = conn.cursor()
+            
+            valid_users, invalid_users = validate_tagged_users(cursor, message_text)
+            
+            if invalid_users:
+                conn.close()
+                invalid_list = ', '.join(invalid_users)
+                reply = QMessageBox.question(
+                    self, 
+                    "Invalid Tagged Users", 
+                    f"The following tagged users do not exist:\n@{invalid_list}\n\n"
+                    f"Would you like to edit your message and select valid users?",
+                    QMessageBox.Yes | QMessageBox.No
+                )
+                
+                if reply == QMessageBox.Yes:
+                    # Keep the message in input for editing
+                    return
+                else:
+                    # Clear the message
+                    self.message_input.clear()
+                    return
+            
+            conn.close()
+        
+        conn = sqlite3.connect("testing_system.db")
+        cursor = conn.cursor()
+        
+        user_id = self.user_info.get('user_id')
+        role_id = self.user_info.get('role_id')
+        username = self.user_info.get('username', 'Unknown')
+        
+        # Insert message
+        insert_message(cursor, user_id, username, role_name, role_id, message_text)
+        
+        # Get the message ID of the just inserted message
+        message_id = cursor.lastrowid
+        
+        # Create notifications for tagged users
+        create_notification_for_tags(cursor, message_id, message_text, user_id)
+        
+        log_user_activity(cursor, user_id, username, role_id, role_name, 
+                         "message_sent", f"Sent message: {message_text[:50]}...")
+        
+        print(f"💬 Message sent by {username} ({role_name}): {message_text[:30]}...")
+        
+        conn.commit()
+        conn.close()
+        
+        self.message_input.clear()
+        self.load_messages()
+    
+    def clear_all_chat(self):
+        """Clear all chat messages (superadmin only)"""
+        role_name = self.user_info.get('role_name', 'user')
+        if role_name != 'superadmin':
+            QMessageBox.warning(self, "Access Denied", "Only superadmin can clear all chat")
+            return
+        
+        reply = QMessageBox.question(self, "Confirm Clear All", 
+                                   "Are you sure you want to clear all chat messages?",
+                                   QMessageBox.Yes | QMessageBox.No)
+        
+        if reply == QMessageBox.Yes:
+            conn = sqlite3.connect("testing_system.db")
+            cursor = conn.cursor()
+            
+            user_id = self.user_info.get('user_id')
+            role_id = self.user_info.get('role_id')
+            username = self.user_info.get('username', 'Unknown')
+            
+            clear_all_messages(cursor)
+            log_user_activity(cursor, user_id, username, role_id, role_name, 
+                             "clear_all_chat", "Cleared all chat messages")
+            
+            print(f"🗑️ All chat messages cleared by {username} (superadmin)")
+            
+            conn.commit()
+            conn.close()
+            
+            self.load_messages()
+            QMessageBox.information(self, "Success", "All chat messages have been cleared")
+    
+    def delete_selected_message(self):
+        """Delete selected message (admin only)"""
+        role_name = self.user_info.get('role_name', 'user')
+        if role_name not in ['admin', 'superadmin']:
+            QMessageBox.warning(self, "Access Denied", "Only admin can delete messages")
+            return
+        
+        QMessageBox.information(self, "Feature", "Message deletion feature will be enhanced in future updates")
+    
+    def view_user_activity(self):
+        """View user activity log (superadmin only)"""
+        role_name = self.user_info.get('role_name', 'user')
+        if role_name != 'superadmin':
+            QMessageBox.warning(self, "Access Denied", "Only superadmin can view user activity")
+            return
+        
+        dialog = UserActivityDialog()
+        dialog.exec_()
+    
+    def manage_users(self):
+        """Manage users (superadmin only)"""
+        role_name = self.user_info.get('role_name', 'user')
+        if role_name != 'superadmin':
+            QMessageBox.warning(self, "Access Denied", "Only superadmin can manage users")
+            return
+        
+        dialog = UserManagementDialog()
+        dialog.exec_()
+    
+    def closeEvent(self, event):
+        """Log user logout when closing"""
+        conn = sqlite3.connect("testing_system.db")
+        cursor = conn.cursor()
+        
+        user_id = self.user_info.get('user_id')
+        role_id = self.user_info.get('role_id')
+        username = self.user_info.get('username', 'Unknown')
+        role_name = self.user_info.get('role_name', 'user')
+        
+        log_user_activity(cursor, user_id, username, role_id, role_name, 
+                         "chat_logout", "User logged out of chat system")
+        
+        print(f"👋 {username} ({role_name}) logged out of chat system")
+        
+        conn.commit()
+        conn.close()
+        event.accept()
+
+def main():
+    app = QApplication(sys.argv)
+    
+    print("=" * 60)
+    print("💬 MEDICAL TESTING SYSTEM - CHAT INTERFACE")
+    print("=" * 60)
+    
+    # Check if database exists, if not run setup
+    try:
+        print("🔍 Checking database connection...")
+        conn = sqlite3.connect("testing_system.db", timeout=5.0)
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM users")
+        user_count = cursor.fetchone()[0]
+        cursor.execute("SELECT COUNT(*) FROM roles") 
+        role_count = cursor.fetchone()[0]
+        conn.close()
+        
+        print(f"✓ Database connection successful")
+        print(f"✓ Found {user_count} users in system")
+        print(f"✓ Found {role_count} roles configured") 
+        print("✓ Chat system ready")
+        print("-" * 60)
+        
+    except Exception as e:
+        print(f"✗ Database error: {str(e)}")
+        QMessageBox.critical(None, "Database Error", 
+                           "Database not found or error occurred.\nPlease run 'python databaseSetup1.py' first to initialize the database.")
+        sys.exit()
+    
+    # Show login dialog
+    login_dialog = LoginDialog()
+    if login_dialog.exec_() == QDialog.Accepted and login_dialog.user_info:
+        # Create and show chat window
+        chat_window = ChatWindow(login_dialog.user_info)
+        chat_window.show()
+        
+        print("🚀 Chat interface launched successfully")
+        print("=" * 60)
+        
+        sys.exit(app.exec_())
+    else:
+        print("❌ Login cancelled or failed")
+        sys.exit()
+
+if __name__ == "__main__":
+    main() 
