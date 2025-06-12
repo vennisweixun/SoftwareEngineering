@@ -1,0 +1,1220 @@
+from PyQt5.QtWidgets import (
+    QApplication, QWidget, QLabel, QLineEdit, QPushButton, QVBoxLayout, QHBoxLayout, QMessageBox, QFrame, QComboBox,
+    QDialog, QGraphicsOpacityEffect, QCheckBox, QTableWidget, QTableWidgetItem, QHeaderView, QSizePolicy
+)
+from PyQt5.QtCore import Qt, QPropertyAnimation, QEasingCurve, pyqtProperty, QSize
+from PyQt5.QtGui import QFont, QPainter, QColor, QPixmap, QPalette, QBrush, QIcon
+import sqlite3
+import hashlib
+import smtplib
+from email.mime.text import MIMEText
+import sys
+import importlib.util
+
+
+# === Database Setup ===
+def init_db():
+    conn = sqlite3.connect("medical_system.db")
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS Users (
+        user_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        username TEXT UNIQUE NOT NULL,
+        password TEXT NOT NULL,
+        role TEXT CHECK(role IN ('admin', 'product_owner', 'tester')) NOT NULL,
+        email TEXT,
+        phone_no TEXT,
+        branch TEXT CHECK(branch IN ('Golden Triangle', 'Raja Uda', 'Balik Pulau') OR branch IS NULL)
+    )''')
+
+    c.execute('''CREATE TABLE IF NOT EXISTS Products (
+                                                         product_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                                                         user_id INTEGER,
+                                                         product_name TEXT NOT NULL,
+                                                         manufacture_date TEXT,
+                                                         expired_date TEXT,
+                                                         arrival_date TEXT,
+                                                         location TEXT,
+                                                         batch TEXT,
+                                                         barcode TEXT,
+                                                         barcode_image TEXT,
+                                                         excel_name TEXT,
+                                                         sku TEXT,
+                                                         product_image TEXT,
+                                                         description TEXT,
+                                                         status TEXT DEFAULT 'pending' CHECK(status IN ('pending', 'approved', 'rejected')),
+                                                         FOREIGN KEY (user_id) REFERENCES Users(user_id)
+    )''')
+
+    c.execute('''CREATE TABLE IF NOT EXISTS Notifications (
+        notification_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER,
+        message TEXT NOT NULL,
+        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+        is_read INTEGER DEFAULT 0,
+        product_id INTEGER,
+        FOREIGN KEY (user_id) REFERENCES Users(user_id),
+        FOREIGN KEY (product_id) REFERENCES Products(product_id)
+    )''')
+
+    try:
+        c.execute("INSERT INTO Users (username, password, role, email, branch) VALUES (?, ?, ?, ?, ?)",
+                  ("admin1", hash_password("admin123"), "admin", "admin1@example.com", "Golden Triangle"))
+        c.execute("INSERT INTO Users (username, password, role, email, branch) VALUES (?, ?, ?, ?, ?)",
+                  ("owner1", hash_password("owner123"), "product_owner", "owner1@example.com", "Raja Uda"))
+        c.execute("INSERT INTO Users (username, password, role, email, branch) VALUES (?, ?, ?, ?, ?)",
+                  ("tester1", hash_password("tester123"), "tester", "tester1@example.com", "Balik Pulau"))
+    except sqlite3.IntegrityError:
+        pass
+
+    conn.commit()
+    conn.close()
+
+
+def alter_users_table():
+    conn = sqlite3.connect("medical_system.db")
+    c = conn.cursor()
+
+    try:
+        c.execute("ALTER TABLE Users ADD COLUMN email TEXT")
+    except sqlite3.OperationalError:
+        print("Column 'email' already exists.")
+
+    try:
+        c.execute("ALTER TABLE Users ADD COLUMN phone_no TEXT")
+    except sqlite3.OperationalError:
+        print("Column 'phone_no' already exists.")
+
+    conn.commit()
+    conn.close()
+
+
+def alter_products_table():
+    conn = sqlite3.connect("medical_system.db")
+    c = conn.cursor()
+    try:
+        c.execute("ALTER TABLE Products ADD COLUMN status TEXT DEFAULT 'pending'")
+    except sqlite3.OperationalError:
+        print("Column 'status' already exists in Products table.")
+    try:
+        c.execute("ALTER TABLE Products ADD COLUMN description TEXT")
+    except sqlite3.OperationalError:
+        print("Column 'description' already exists in Products table.")
+    conn.commit()
+    conn.close()
+
+
+# === Hash Password ===
+def hash_password(password):
+    return hashlib.sha256(password.encode()).hexdigest()
+
+
+# === Product Owner Dashboard ===
+class ProductOwnerWindow(QWidget):
+    def __init__(self, username):
+        super().__init__()
+        self.setWindowTitle("Product Owner Dashboard")
+        self.showMaximized()
+        self.setObjectName("ProductOwnerWindow")
+
+        self.setStyleSheet("""
+            #ProductOwnerWindow {
+                background-color: #e0f7fa;
+            }
+            QLabel {
+                font-size: 28px;
+                color: #00796b;
+            }
+        """)
+
+        layout = QVBoxLayout()
+        label = QLabel(f"Welcome, {username} (Product Owner)")
+        label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(label)
+        self.setLayout(layout)
+
+
+# === Tester Dashboard ===
+class TesterWindow(QWidget):
+    def __init__(self, username):
+        super().__init__()
+        self.setWindowTitle("Tester Dashboard")
+        self.showMaximized()
+        self.setObjectName("TesterWindow")
+
+        self.setStyleSheet("""
+            #TesterWindow {
+                background-color: #fce4ec;
+            }
+            QLabel {
+                font-size: 28px;
+                color: #c2185b;
+            }
+        """)
+
+        layout = QVBoxLayout()
+        label = QLabel(f"Welcome, {username} (Tester)")
+        label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(label)
+        self.setLayout(layout)
+
+
+# === Admin Dashboard ===
+class LoginWindow(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Medical System Login")
+        self.showMaximized()
+        self.setup_ui()
+
+    def update_background_size(self, event):
+        self.background.resize(self.size())
+
+    def setup_ui(self):
+        font = "Arial"
+
+        # === Background QLabel ===
+        self.background = QLabel(self)
+        self.background.setPixmap(QPixmap(r"C:\Users\Vennis\Downloads\se_background.jpg"))
+        self.background.setScaledContents(True)
+        self.background.resize(self.size())
+        self.background.lower()  # Send to back so widgets appear above
+
+        self.resizeEvent = self.update_background_size  # Adjust when window resizes
+
+        # === Form Container Frame ===
+        self.form_frame = QFrame(self)
+        self.form_frame.setStyleSheet(""" 
+            QFrame {
+                background-color: rgba(255, 255, 255, 180);  /* White with transparency */
+                border-radius: 15px;
+            }
+        """)
+        self.form_frame.setFixedSize(400, 400)
+        # === Username ===
+        self.username_label = QLabel("Username")
+        self.username_label.setStyleSheet("font-size: 22px;")
+        self.username_input = QLineEdit()
+        self.username_input.setFixedWidth(300)
+        self.username_input.setStyleSheet("font-size: 18px; padding: 2px;")
+
+        username_layout = QVBoxLayout()
+        username_layout.addWidget(self.username_label, alignment=Qt.AlignCenter)
+        username_layout.addWidget(self.username_input, alignment=Qt.AlignCenter)
+
+        # === Password ===
+        self.password_label = QLabel("Password")
+        self.password_label.setStyleSheet("font-size: 22px;")
+        self.password_input = QLineEdit()
+        self.password_input.setEchoMode(QLineEdit.Password)
+        self.password_input.setFixedWidth(300)
+        self.password_input.setStyleSheet("font-size: 18px; padding: 2px;")
+
+        password_layout = QVBoxLayout()
+        password_layout.addWidget(self.password_label, alignment=Qt.AlignCenter)
+        password_layout.addWidget(self.password_input, alignment=Qt.AlignCenter)
+
+        # === Buttons ===
+        self.login_button = QPushButton("Login")
+        self.login_button.clicked.connect(self.login)
+        self.login_button.setStyleSheet(
+            "QPushButton { background-color: #0B7649; color: white; font-size: 18px; } QPushButton:hover { background-color: #AF5931; }")
+        self.login_button.setFixedWidth(200)
+
+        # Fade-in effect
+        self.opacity_effect = QGraphicsOpacityEffect()
+        self.login_button.setGraphicsEffect(self.opacity_effect)
+
+        self.fade_in = QPropertyAnimation(self.opacity_effect, b"opacity")
+        self.fade_in.setDuration(1000)
+        self.fade_in.setStartValue(0)
+        self.fade_in.setEndValue(1)
+        self.fade_in.start()
+
+        # Exit button
+        self.exit_button = QPushButton("Exit")
+        self.exit_button.clicked.connect(self.exit_app)
+        self.exit_button.setStyleSheet("font-size: 18px;")
+        self.exit_button.setFixedWidth(200)
+
+        button_layout = QVBoxLayout()
+        button_layout.addSpacing(50)
+        button_layout.addWidget(self.login_button, alignment=Qt.AlignCenter)
+        button_layout.addSpacing(10)
+        button_layout.addWidget(self.exit_button, alignment=Qt.AlignCenter)
+
+        # === Inner Layout Inside Form Box ===
+        form_layout = QVBoxLayout()
+        form_layout.addStretch()
+        form_layout.addLayout(username_layout)
+        form_layout.addLayout(password_layout)
+        form_layout.addLayout(button_layout)
+        form_layout.addStretch()
+
+        self.form_frame.setLayout(form_layout)
+
+        # === Outer Layout (Center Everything) ===
+        main_layout = QVBoxLayout()
+        main_layout.addStretch()
+        main_layout.addWidget(self.form_frame, alignment=Qt.AlignCenter)
+        main_layout.addStretch()
+
+        self.setLayout(main_layout)
+
+    def login(self):
+        username = self.username_input.text()
+        password = self.password_input.text()
+        hashed_pw = hash_password(password)
+
+        conn = sqlite3.connect("medical_system.db")
+        c = conn.cursor()
+        c.execute("SELECT role, user_id, branch FROM Users WHERE username=? AND password=?", (username, hashed_pw))
+        result = c.fetchone()
+        conn.close()
+
+        if result:
+            role, user_id, branch = result
+            QMessageBox.information(self, "Login Success", f"Welcome, {username}! Role: {role}")
+            self.close()
+
+            if role == "admin":
+                self.admin_window = AdminWindow(username)
+                self.admin_window.show()
+            elif role == "product_owner":
+                import importlib.util
+                try:
+                    spec = importlib.util.spec_from_file_location("owner_module", "Owner.py")
+                    add_product_module = importlib.util.module_from_spec(spec)
+                    spec.loader.exec_module(add_product_module)
+                    self.owner_window = add_product_module.OwnerMainWindow(username, user_id, branch)
+                    self.owner_window.show()
+                except Exception as e:
+                    QMessageBox.critical(self, "Error", f"Failed to load product owner window: {e}")
+            elif role == "tester":
+                self.tester_window = TesterWindow(username)
+                self.tester_window.show()
+        else:
+            QMessageBox.critical(self, "Login Failed", "Invalid username or password")
+
+    def exit_app(self):
+        confirm = QMessageBox.question(self, "Exit Confirmation", "Are you sure you want to exit?",
+                                       QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if confirm == QMessageBox.Yes:
+            self.close()
+
+
+class AdminWindow(QWidget):
+    def __init__(self, username):
+        super().__init__()
+        self.setWindowTitle("Admin Dashboard")
+        self.showMaximized()
+        self.setObjectName("AdminWindow")
+        self.username = username
+
+        self.setStyleSheet("""
+            #AdminWindow {
+                background-color: #f0f0f0;
+            }
+            QLabel {
+                font-size: 28px;
+                color: #333;
+            }
+        """)
+
+        # Layouts
+        main_layout = QVBoxLayout()
+        top_layout = QHBoxLayout()
+        content_layout = QVBoxLayout()
+
+        # Welcome Label
+        self.welcome_label = QLabel(f"Welcome, {username} (Admin)")
+        self.welcome_label.setAlignment(Qt.AlignCenter)
+        content_layout.addWidget(self.welcome_label)
+
+        # Combine layouts
+        main_layout.addLayout(top_layout)
+        main_layout.addLayout(content_layout)
+        self.setLayout(main_layout)
+
+        # Buttons
+        self.add_account_btn = QPushButton("Add New Account")
+        self.manage_products_btn = QPushButton("Manage Products")
+        self.remind_tester_btn = QPushButton("Remind Tester")
+        self.settings_btn = QPushButton("Settings")
+
+        # Style
+        for btn in [self.add_account_btn, self.manage_products_btn, self.remind_tester_btn, self.settings_btn]:
+            btn.setStyleSheet("font-size: 16px; padding: 8px;")
+            top_layout.addWidget(btn, alignment=Qt.AlignLeft)
+
+        # Connect actions
+        self.add_account_btn.clicked.connect(self.open_add_account_window)
+        self.manage_products_btn.clicked.connect(self.open_manage_products)
+        self.remind_tester_btn.clicked.connect(self.open_remind_tester)
+        self.settings_btn.clicked.connect(self.open_settings)
+
+    def open_add_account_window(self):
+        self.add_window = AddAccountWindow()
+        self.add_window.exec_()
+
+    def open_manage_products(self):
+        self.close()
+        self.manage_window = ManageProductsWindow(self)
+        self.manage_window.showFullScreen()
+
+    def open_remind_tester(self):
+        self.close()
+        self.remind_window = RemindTesterWindow(self)
+        self.remind_window.showFullScreen()
+
+    def open_settings(self):
+        self.settings_window = SettingsWindow(self, self.username)
+        self.settings_window.showFullScreen()
+
+
+class ManageProductsWindow(QWidget):
+    def __init__(self, parent):
+        super().__init__()
+        self.parent = parent
+        self.setWindowTitle("Manage Products")
+        self.setStyleSheet("background-color: #fde8d8;")
+        self.setMinimumSize(1200, 800)  # Set minimum window size
+        self.initUI()
+
+    def initUI(self):
+        main_layout = QVBoxLayout()
+        main_layout.setContentsMargins(20, 20, 20, 20)
+
+        # Title
+        title = QLabel("Manage Products")
+        title.setFont(QFont("Arial", 28, QFont.Bold))
+        title.setStyleSheet("color: #5D3A00;")
+        title.setAlignment(Qt.AlignCenter)
+        main_layout.addWidget(title)
+        main_layout.addSpacing(20)
+
+        # Create table widget
+        self.table = QTableWidget()
+        self.table.setColumnCount(7)
+        self.table.setHorizontalHeaderLabels([
+            "Product Name", "Batch Code", "SKU", "Branch", 
+            "Manufacture Date", "Expiry Date", "Action"
+        ])
+        self.table.setStyleSheet("""
+            QTableWidget {
+                background-color: white;
+                border: 1px solid #8B5A2B;
+                border-radius: 10px;
+                gridline-color: #d3d3d3;
+            }
+            QHeaderView::section {
+                background-color: #fde8d8;
+                padding: 8px;
+                border: 1px solid #8B5A2B;
+                font-weight: bold;
+                color: #5D3A00;
+            }
+            QTableWidget::item {
+                padding: 8px;
+            }
+        """)
+        # Set resize mode for columns
+        self.table.horizontalHeader().setStretchLastSection(False) # Disable stretching last section
+        for i in range(self.table.columnCount()):
+            if i == 6: # Action column
+                self.table.horizontalHeader().setSectionResizeMode(i, QHeaderView.ResizeToContents) # Use ResizeToContents
+            else:
+                self.table.horizontalHeader().setSectionResizeMode(i, QHeaderView.Stretch)
+        
+        self.table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        main_layout.addWidget(self.table)
+
+        # Navigation buttons
+        button_layout = QHBoxLayout()
+        
+        back_dashboard_btn = QPushButton("Back to Dashboard")
+        back_dashboard_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #d08b5b;
+                color: white;
+                padding: 10px 20px;
+                font-size: 16px;
+                border-radius: 10px;
+            }
+            QPushButton:hover {
+                background-color: #b86a2a;
+            }
+        """)
+        back_dashboard_btn.clicked.connect(self.back_to_dashboard)
+        button_layout.addWidget(back_dashboard_btn)
+
+        back_login_btn = QPushButton("Back to Login")
+        back_login_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #d08b5b;
+                color: white;
+                padding: 10px 20px;
+                font-size: 16px;
+                border-radius: 10px;
+            }
+            QPushButton:hover {
+                background-color: #b86a2a;
+            }
+        """)
+        back_login_btn.clicked.connect(self.back_to_login)
+        button_layout.addWidget(back_login_btn)
+
+        main_layout.addLayout(button_layout)
+        self.setLayout(main_layout)
+
+        # Load products
+        self.load_products()
+
+    def load_products(self):
+        try:
+            conn = sqlite3.connect("medical_system.db")
+            cursor = conn.cursor()
+            
+            # Get all pending products
+            cursor.execute("""
+                SELECT p.product_id, p.product_name, p.batch, p.sku, u.branch, 
+                       p.manufacture_date, p.expired_date, p.status
+                FROM Products p
+                JOIN Users u ON p.user_id = u.user_id
+                WHERE p.status = 'pending'
+                ORDER BY p.product_id DESC
+            """)
+            
+            products = cursor.fetchall()
+            print(f"DEBUG: Loaded {len(products)} pending products.") # Debug print
+            self.table.setRowCount(len(products))
+            
+            for row, product in enumerate(products):
+                # Add product details
+                self.table.setItem(row, 0, QTableWidgetItem(str(product[1])))  # Product Name
+                self.table.setItem(row, 1, QTableWidgetItem(str(product[2])))  # Batch
+                self.table.setItem(row, 2, QTableWidgetItem(str(product[3])))  # SKU
+                self.table.setItem(row, 3, QTableWidgetItem(str(product[4])))  # Branch
+                self.table.setItem(row, 4, QTableWidgetItem(str(product[5])))  # Manufacture Date
+                self.table.setItem(row, 5, QTableWidgetItem(str(product[6])))  # Expiry Date
+                
+                # Create and set custom ProductActionWidget
+                action_widget = ProductActionWidget(
+                    product_id=product[0],
+                    approve_callback=self.approve_product,
+                    reject_callback=self.reject_product
+                )
+                self.table.setCellWidget(row, 6, action_widget)
+            
+            # Manually resize columns and rows to fit contents after populating
+            self.table.resizeColumnsToContents()
+            self.table.resizeRowsToContents()
+            self.table.update() # Force repaint and layout update
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to load products: {str(e)}")
+        finally:
+            if 'conn' in locals():
+                conn.close()
+
+    def approve_product(self, product_id):
+        conn = sqlite3.connect("medical_system.db")
+        cursor = conn.cursor()
+        
+        try:
+            # Update product status to approved
+            cursor.execute("UPDATE Products SET status = 'approved' WHERE product_id = ?", (product_id,))
+            conn.commit()
+            
+            # Get product owner's user_id
+            cursor.execute("SELECT user_id FROM Products WHERE product_id = ?", (product_id,))
+            user_id = cursor.fetchone()[0]
+            
+            # Add notification for product owner
+            cursor.execute("""
+                INSERT INTO Notifications (user_id, message, timestamp, is_read, product_id)
+                VALUES (?, ?, datetime('now'), 0, ?)
+            """, (user_id, "Your product has been approved!", product_id))
+            conn.commit()
+            
+            QMessageBox.information(self, "Success", "Product has been approved!")
+            self.load_products()  # Refresh the table
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to approve product: {str(e)}")
+        finally:
+            conn.close()
+
+    def reject_product(self, product_id):
+        conn = sqlite3.connect("medical_system.db")
+        cursor = conn.cursor()
+        
+        try:
+            # Update product status to rejected
+            cursor.execute("UPDATE Products SET status = 'rejected' WHERE product_id = ?", (product_id,))
+            conn.commit()
+            
+            # Get product owner's user_id
+            cursor.execute("SELECT user_id FROM Products WHERE product_id = ?", (product_id,))
+            user_id = cursor.fetchone()[0]
+            
+            # Add notification for product owner
+            cursor.execute("""
+                INSERT INTO Notifications (user_id, message, timestamp, is_read, product_id)
+                VALUES (?, ?, datetime('now'), 0, ?)
+            """, (user_id, "Your product has been rejected.", product_id))
+            conn.commit()
+            
+            QMessageBox.information(self, "Success", "Product has been rejected!")
+            self.load_products()  # Refresh the table
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to reject product: {str(e)}")
+        finally:
+            conn.close()
+
+    def back_to_login(self):
+        self.close()
+        self.login = LoginWindow()
+        self.login.show()
+
+    def back_to_dashboard(self):
+        self.close()
+        self.parent.showFullScreen()
+
+
+class ProductActionWidget(QWidget):
+    def __init__(self, product_id, approve_callback, reject_callback, parent=None):
+        super().__init__(parent)
+        self.product_id = product_id
+        self.approve_callback = approve_callback
+        self.reject_callback = reject_callback
+        self.initUI()
+
+    def initUI(self):
+        action_layout = QHBoxLayout(self)
+        action_layout.setContentsMargins(0, 0, 0, 0)
+        action_layout.setSpacing(5)
+        action_layout.setSizeConstraint(QHBoxLayout.SetFixedSize)
+        self.setMinimumSize(self.sizeHint()) # Set minimum size of the widget based on its sizeHint
+        action_layout.activate() # Force layout recalculation
+
+        approve_btn = QPushButton("Approve")
+        approve_btn.setFixedSize(110, 25) # Fixed size for buttons
+        approve_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #4CAF50;
+                color: white;
+                padding: 5px;
+                border-radius: 5px;
+                font-size: 13px;
+            }
+            QPushButton:hover {
+                background-color: #45a049;
+            }
+        """)
+        approve_btn.clicked.connect(lambda: self.approve_callback(self.product_id))
+
+        reject_btn = QPushButton("Reject")
+        reject_btn.setFixedSize(110, 25) # Fixed size for buttons
+        reject_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #f44336;
+                color: white;
+                padding: 5px;
+                border-radius: 5px;
+                font-size: 13px;
+            }
+            QPushButton:hover {
+                background-color: #da190b;
+            }
+        """)
+        reject_btn.clicked.connect(lambda: self.reject_callback(self.product_id))
+
+        action_layout.addWidget(approve_btn)
+        action_layout.addWidget(reject_btn)
+
+    def sizeHint(self):
+        # Define the explicit size hint for this widget
+        return QSize(230, 30) # Sufficient space for two 110px buttons + 5px spacing
+
+
+class RemindTesterWindow(QWidget):
+    def __init__(self, parent):
+        super().__init__()
+        self.parent = parent
+        self.setWindowTitle("Remind Tester")
+
+        layout = QVBoxLayout()
+        label = QLabel("Remind Tester")
+        label.setAlignment(Qt.AlignCenter)
+        label.setStyleSheet("font-size: 24px;")
+        layout.addWidget(label)
+
+        back_login_btn = QPushButton("Back to Login")
+        back_login_btn.clicked.connect(self.back_to_login)
+        layout.addWidget(back_login_btn, alignment=Qt.AlignCenter)
+
+        back_dashboard_btn = QPushButton("Back to Dashboard")
+        back_dashboard_btn.clicked.connect(self.back_to_dashboard)
+        layout.addWidget(back_dashboard_btn, alignment=Qt.AlignCenter)
+
+        self.setLayout(layout)
+
+    def back_to_login(self):
+        self.close()  # Close the settings window
+        self.parent.close()  # Close or hide the dashboard window (parent)
+        self.login = LoginWindow()  # Create login window
+        self.login.show()  # Show login window
+
+    def back_to_dashboard(self):
+        self.close()
+        self.parent.showFullScreen()
+
+
+class SettingsWindow(QWidget):
+    def __init__(self, parent, username):
+        super().__init__()
+        self.parent = parent
+        self.username = username
+        self.setWindowTitle("Settings")
+        self.setObjectName("SettingsWindow")
+
+        # Layout
+        self.layout = QVBoxLayout()
+        self.setLayout(self.layout)
+
+        # Create buttons and inputs (initially hidden where necessary)
+        self.init_ui()
+        self.set_background()
+
+        self.showFullScreen()
+
+    def init_ui(self):
+
+        # === Initial Buttons ===
+        self.change_password_btn = QPushButton("Change New Password", self)
+        self.change_password_btn.setGeometry(225, 415, 730, 350)
+        self.change_password_btn.setStyleSheet("font-size: 24px;")
+        self.change_password_btn.clicked.connect(self.show_password_change_ui)
+
+        self.update_info_btn = QPushButton("Update Information", self)
+        self.update_info_btn.setGeometry(965, 415, 730, 350)
+        self.update_info_btn.setStyleSheet("font-size: 24px;")
+        self.update_info_btn.clicked.connect(self.show_update_information_ui)
+
+        self.username_label = QLabel("Username:", self)
+        self.username_label.setGeometry(1300, 165, 250, 50)
+        self.username_label.setStyleSheet("""
+            font-size: 24px;
+            color: #0b7649;
+            font-weight: bold;
+        """)
+
+        self.username_input = QLineEdit(self)
+        self.username_input.setGeometry(1300, 200, 250, 40)
+        self.username_input.setText(self.username)
+        self.username_input.setReadOnly(True)
+        self.username_input.setStyleSheet("""
+            background: transparent;
+            border: none;
+            font-size: 22px;
+            border-bottom: 2px solid #0b7649;
+            color: #0b7649;
+            font-weight: bold;
+        """)
+
+        # === Password Change Widgets (initially hidden) ===
+        self.oldpassword_label = QLabel("Old Password:", self)
+        self.oldpassword_label.setGeometry(660, 385, 250, 60)
+        self.oldpassword_label.setStyleSheet("font-size: 22px;")
+        self.oldpassword_label.hide()
+
+        self.oldpassword_input = QLineEdit(self)
+        self.oldpassword_input.setGeometry(850, 390, 250, 40)
+        self.oldpassword_input.setStyleSheet("font-size: 18px; padding: 4px;")
+        self.oldpassword_input.setEchoMode(QLineEdit.Password)
+        self.oldpassword_input.hide()
+
+        self.newpassword_label = QLabel("New Password:", self)
+        self.newpassword_label.setGeometry(660, 455, 250, 60)
+        self.newpassword_label.setStyleSheet("font-size: 22px;")
+        self.newpassword_label.hide()
+
+        self.newpassword_input = QLineEdit(self)
+        self.newpassword_input.setGeometry(850, 460, 250, 40)
+        self.newpassword_input.setStyleSheet("font-size: 18px; padding: 4px;")
+        self.newpassword_input.setEchoMode(QLineEdit.Password)
+        self.newpassword_input.hide()
+
+        self.toggle_password_btn = QPushButton("👁️", self)
+        self.toggle_password_btn.setGeometry(1100, 460, 40, 40)
+        self.toggle_password_btn.setStyleSheet("font-size: 18px; padding: 6px;")
+        self.toggle_password_btn.clicked.connect(self.toggle_password_visibility)
+        self.toggle_password_btn.hide()
+
+        self.update_password_btn = QPushButton("Update Password", self)
+        self.update_password_btn.setGeometry(850, 540, 250, 40)
+        self.update_password_btn.setStyleSheet(
+            "QPushButton { background-color: #0B7649; color: white; font-size: 18px; } QPushButton:hover { background-color: #FCA6FF; }")
+        self.update_password_btn.clicked.connect(self.update_password)
+        self.update_password_btn.hide()
+
+        # === Update Information Widgets (initially hidden) ===
+        self.inform_label = QLabel("Attention: Superadmin will be informed of the changes.", self)
+        self.inform_label.setGeometry(210, 335, 500, 40)
+        self.inform_label.setStyleSheet("font-size: 14px; color: red")
+        self.inform_label.hide()
+
+        self.email_label = QLabel("Email Address:", self)
+        self.email_label.setGeometry(660, 385, 250, 60)
+        self.email_label.setStyleSheet("font-size: 22px;")
+        self.email_label.hide()
+
+        self.email_input = QLineEdit(self)
+        self.email_input.setGeometry(850, 390, 250, 40)
+        self.email_input.setStyleSheet("font-size: 18px; padding: 4px;")
+        self.email_input.hide()
+
+        self.phone_label = QLabel("Phone Number:", self)
+        self.phone_label.setGeometry(660, 455, 250, 60)
+        self.phone_label.setStyleSheet("font-size: 22px;")
+        self.phone_label.hide()
+
+        self.phone_input = QLineEdit(self)
+        self.phone_input.setGeometry(850, 460, 250, 40)
+        self.phone_input.setStyleSheet("font-size: 18px; padding: 4px;")
+        self.phone_input.hide()
+
+        self.confirm_update_info_btn = QPushButton("Update Information", self)
+        self.confirm_update_info_btn.setGeometry(850, 540, 250, 40)
+        self.confirm_update_info_btn.setStyleSheet(
+            "QPushButton { background-color: #0B7649; color: white; font-size: 18px; } QPushButton:hover { background-color: #FCA6FF; }")
+        self.confirm_update_info_btn.clicked.connect(self.update_user_info)
+        self.confirm_update_info_btn.hide()
+
+        self.back_settings_btn = QPushButton("Back", self)
+        self.back_settings_btn.setGeometry(850, 600, 250, 40)
+        self.back_settings_btn.setStyleSheet("font-size: 18px;")
+        self.back_settings_btn.clicked.connect(self.show_initial_ui)
+        self.back_settings_btn.hide()
+
+        # Top Left Navigation Buttons
+        transparent_button_style = """
+            QPushButton {
+                background-color: transparent;
+                color: black;
+                border: 1px solid white;
+                font-size: 16px;
+                padding: 6px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #326849;
+                color: white;
+            }
+        """
+
+        self.back_dashboard_btn = QPushButton("Back to Dashboard", self)
+        self.back_dashboard_btn.setGeometry(180, 50, 180, 40)
+        self.back_dashboard_btn.setStyleSheet(transparent_button_style)
+        self.back_dashboard_btn.clicked.connect(self.back_to_dashboard)
+
+        self.back_login_btn = QPushButton("Logout", self)
+        self.back_login_btn.setGeometry(360, 50, 180, 40)
+        self.back_login_btn.setStyleSheet(transparent_button_style)
+        self.back_login_btn.clicked.connect(self.back_to_login)
+
+    # show change password ui
+    def show_password_change_ui(self):
+        # Hide initial buttons
+        self.change_password_btn.hide()
+        self.update_info_btn.hide()
+
+        # Show password fields and buttons
+        for widget in [
+            # self.username_label, self.username_input,
+            self.oldpassword_label, self.oldpassword_input,
+            self.newpassword_label, self.newpassword_input,
+            self.toggle_password_btn, self.update_password_btn,
+            self.back_settings_btn
+        ]:
+            widget.show()
+
+    # show update info ui
+    def show_update_information_ui(self):
+        self.change_password_btn.hide()
+        self.update_info_btn.hide()
+
+        for widget in [
+            self.inform_label,
+            self.email_label, self.email_input,
+            self.phone_label, self.phone_input,
+            self.confirm_update_info_btn,
+            self.back_settings_btn
+        ]:
+            widget.show()
+
+    def show_initial_ui(self):
+        for widget in [
+            self.oldpassword_label, self.oldpassword_input,
+            self.newpassword_label, self.newpassword_input,
+            self.toggle_password_btn, self.update_password_btn,
+            self.back_settings_btn
+        ]:
+            widget.hide()
+
+        for widget in [
+            self.inform_label,
+            self.email_label, self.email_input,
+            self.phone_label, self.phone_input,
+            self.confirm_update_info_btn,
+            self.back_settings_btn
+        ]:
+            widget.hide()
+
+        self.change_password_btn.show()
+        self.update_info_btn.show()
+
+    def set_background(self):
+        self.background = QPixmap(r"C:\Kai Shuang\softwareAssignment.png")
+        if self.background.isNull():
+            self.background = None
+            print("Failed to load background image")
+
+        self.setAttribute(Qt.WA_StyledBackground)
+        self.setAutoFillBackground(True)
+
+    def paintEvent(self, event):
+        if self.background:
+            painter = QPainter(self)
+            scaled_bg = self.background.scaled(self.size(), Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
+            x = (scaled_bg.width() - self.width()) // 2
+            y = (scaled_bg.height() - self.height()) // 2
+            painter.drawPixmap(-x, -y, scaled_bg)
+        else:
+            super().paintEvent(event)
+
+    def toggle_password_visibility(self):
+        if self.oldpassword_input.echoMode() == QLineEdit.Password:
+            self.oldpassword_input.setEchoMode(QLineEdit.Normal)
+            self.newpassword_input.setEchoMode(QLineEdit.Normal)
+            self.toggle_password_btn.setText("🫣")
+        else:
+            self.oldpassword_input.setEchoMode(QLineEdit.Password)
+            self.newpassword_input.setEchoMode(QLineEdit.Password)
+            self.toggle_password_btn.setText("👁️")
+
+    def update_password(self):
+        old_password = self.oldpassword_input.text()
+        new_password = self.newpassword_input.text()
+
+        if not old_password or not new_password:
+            QMessageBox.warning(self, "Input Error", "Please fill in both old and new passwords.")
+            return
+
+        hashed_old = hash_password(old_password)
+
+        conn = sqlite3.connect("medical_system.db")
+        c = conn.cursor()
+        c.execute("SELECT password FROM Users WHERE username=?", (self.username,))
+        result = c.fetchone()
+
+        if result and result[0] == hashed_old:
+            hashed_new = hash_password(new_password)
+            c.execute("UPDATE Users SET password=? WHERE username=?", (hashed_new, self.username))
+            conn.commit()
+            conn.close()
+            QMessageBox.information(self, "Success", "Password updated successfully.")
+            self.oldpassword_input.clear()
+            self.newpassword_input.clear()
+        else:
+            conn.close()
+            QMessageBox.critical(self, "Error", "Old password is incorrect.")
+
+    def update_user_info(self):
+        email = self.email_input.text().strip()
+        phone = self.phone_input.text().strip()
+
+        if not email or not phone:
+            QMessageBox.warning(self, "Input Error", "Please fill in both email and phone number.")
+            return
+
+        conn = sqlite3.connect("medical_system.db")
+        c = conn.cursor()
+        c.execute("UPDATE Users SET email=?, phone=? WHERE username=?", (email, phone, self.username))
+        conn.commit()
+        conn.close()
+
+        QMessageBox.information(self, "Success", "Information updated successfully.")
+        self.email_input.clear()
+        self.phone_input.clear()
+
+    def back_to_login(self):
+        self.close()
+        self.parent.close()
+        self.login = LoginWindow()
+        self.login.show()
+
+    def back_to_dashboard(self):
+        self.close()
+        self.parent.showFullScreen()
+
+
+class AddAccountWindow(QDialog):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Add New Account")
+        self.setWindowModality(Qt.ApplicationModal)
+        self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
+        self.setFixedSize(600, 500)
+        self.setup_ui()
+
+    def send_email_notification(self, to_email, username, password):
+        from_email = "your_email@gmail.com"
+        email_password = "your_email_password"  # Replace with your actual email password or use environment variables
+        subject = "Your Account Has Been Created"
+        body = f"Hello {username},\n\nYour account has been created.\nUsername: {username}\nPassword: {password}\n\nThank you."
+
+        msg = MIMEText(body)
+        msg["Subject"] = subject
+        msg["From"] = from_email
+        msg["To"] = to_email
+
+        try:
+            with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+                server.login(from_email, email_password)
+                server.send_message(msg)
+            print(f"Email sent to {to_email}")
+        except Exception as e:
+            print("Failed to send email:", e)
+
+    def setup_ui(self):
+        layout = QVBoxLayout()
+
+        self.title_label = QLabel("Create New Account")
+        font = QFont("Courier New", 26, QFont.Bold)
+        self.title_label.setFont(font)
+        self.title_label.setStyleSheet("color: green;")
+        layout.addWidget(self.title_label, alignment=Qt.AlignCenter)
+
+        # Name row
+        name_layout = QHBoxLayout()
+        self.addname_label = QLabel("Name")
+        self.addname_label.setStyleSheet("font-size: 22px;")
+        self.addname_input = QLineEdit()
+        self.addname_input.setFixedWidth(350)
+        self.addname_input.setStyleSheet("font-size: 18px; padding: 2px;")
+
+        name_layout.addWidget(self.addname_label)
+        name_layout.addWidget(self.addname_input)
+        layout.addLayout(name_layout)
+
+        # Password row
+        password_layout = QHBoxLayout()
+        self.addpassword_label = QLabel("Password")
+        self.addpassword_label.setStyleSheet("font-size: 22px;")
+        self.addpassword_input = QLineEdit()
+        self.addpassword_input.setEchoMode(QLineEdit.Password)
+        self.addpassword_input.setFixedWidth(350)
+        self.addpassword_input.setStyleSheet("font-size: 18px; padding: 2px;")
+
+        password_layout.addWidget(self.addpassword_label)
+        password_layout.addWidget(self.addpassword_input)
+        layout.addLayout(password_layout)
+
+        # Role row
+        role_layout = QHBoxLayout()
+        self.addrole_label = QLabel("Role")
+        self.addrole_label.setStyleSheet("font-size: 22px;")
+        self.addrole_dropdown = QComboBox()
+        self.addrole_dropdown.addItems(["admin", "product_owner", "tester"])
+        self.addrole_dropdown.setFixedWidth(350)
+        self.addrole_dropdown.setStyleSheet("font-size: 18px;")
+        self.addrole_dropdown.currentTextChanged.connect(self.on_role_changed)
+
+        role_layout.addWidget(self.addrole_label)
+        role_layout.addWidget(self.addrole_dropdown)
+        layout.addLayout(role_layout)
+
+        # Branch row
+        branch_layout = QHBoxLayout()
+        self.addbranch_label = QLabel("Branch")
+        self.addbranch_label.setStyleSheet("font-size: 22px;")
+        self.addbranch_dropdown = QComboBox()
+        self.addbranch_dropdown.addItems(["Golden Triangle", "Raja Uda", "Balik Pulau"])
+        self.addbranch_dropdown.setFixedWidth(350)
+        self.addbranch_dropdown.setStyleSheet("font-size: 18px;")
+        self.addbranch_dropdown.hide()  # Initially hidden
+        self.addbranch_label.hide()  # Initially hidden
+
+        branch_layout.addWidget(self.addbranch_label)
+        branch_layout.addWidget(self.addbranch_dropdown)
+        layout.addLayout(branch_layout)
+
+        # Submit Button
+        self.submit_btn = QPushButton("Create Account")
+        self.submit_btn.clicked.connect(self.create_account)
+        self.submit_btn.setStyleSheet("font-size: 18px; padding: 8px;")
+        layout.addWidget(self.submit_btn, alignment=Qt.AlignCenter)
+
+        self.setLayout(layout)
+
+    def on_role_changed(self, role):
+        # Show branch selection only for product owners
+        is_owner = role == "product_owner"
+        self.addbranch_label.setVisible(is_owner)
+        self.addbranch_dropdown.setVisible(is_owner)
+
+    def create_account(self):
+        username = self.addname_input.text()
+        password = self.addpassword_input.text()
+        role = self.addrole_dropdown.currentText()
+
+        # Set branch only for product owners
+        branch = self.addbranch_dropdown.currentText() if role == "product_owner" else None
+
+        if not username or not password:
+            QMessageBox.warning(self, "Input Error", "Please fill in username and password.")
+            return
+
+        if role == "product_owner" and not branch:
+            QMessageBox.warning(self, "Input Error", "Please select a branch for the product owner.")
+            return
+
+        hashed_pw = hash_password(password)
+        conn = sqlite3.connect("medical_system.db")
+        c = conn.cursor()
+        try:
+            c.execute("INSERT INTO Users (username, password, role, branch) VALUES (?, ?, ?, ?)",
+                      (username, hashed_pw, role, branch))
+            conn.commit()
+            QMessageBox.information(self, "Account Created", f"Account for {username} created successfully!")
+            self.close()
+        except sqlite3.IntegrityError:
+            QMessageBox.critical(self, "Error", "Username already exists!")
+        finally:
+            conn.close()
+
+
+# === Toggle Switch ===
+class ToggleSwitch(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(60, 30)
+        self._checked = False
+
+        self._circle_position = 3
+        self.animation = QPropertyAnimation(self, b"circle_position", self)
+        self.animation.setDuration(200)
+        self.animation.setEasingCurve(QEasingCurve.InOutQuad)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+
+        # Background
+        if self._checked:
+            painter.setBrush(QColor("#00c853"))  # Green
+        else:
+            painter.setBrush(QColor("#cfd8dc"))  # Grey
+
+        painter.setPen(Qt.NoPen)
+        painter.drawRoundedRect(0, 0, self.width(), self.height(), 15, 15)
+
+        # Circle
+        painter.setBrush(Qt.white)
+        painter.drawEllipse(int(self._circle_position), 3, 24, 24)
+
+    def mousePressEvent(self, event):
+        self.toggle()
+        super().mousePressEvent(event)
+
+    def toggle(self):
+        self.setChecked(not self._checked)
+
+    def isChecked(self):
+        return self._checked
+
+    def setChecked(self, state):
+        if self._checked != state:
+            self._checked = state
+            self.animate
+
+    def animate_switch(self):
+        start_position = self._circle_position
+        end_position = self.width() - 27 if self._checked else 3
+        self.animation.setStartValue(start_position)
+        self.animation.setEndValue(end_position)
+        self.animation.start()
+
+    @pyqtProperty(int)
+    def circle_position(self):
+        return self._circle_position
+
+    @circle_position.setter
+    def circle_position(self, value):
+        self._circle_position = value
+        self.update()
+
+    def setup_ui(self):
+        layout = QVBoxLayout()
+
+        self.username_label = QLabel("Username")
+        self.username_input = QLineEdit()
+        self.password_label = QLabel("Password")
+        self.password_input = QLineEdit()
+        self.password_input.setEchoMode(QLineEdit.Password)
+
+        self.login_btn = QPushButton("Login")
+        self.login_btn.clicked.connect(self.check_credentials)
+
+        layout.addWidget(self.username_label)
+        layout.addWidget(self.username_input)
+        layout.addWidget(self.password_label)
+        layout.addWidget(self.password_input)
+        layout.addWidget(self.login_btn)
+
+        self.setLayout(layout)
+
+    def check_credentials(self):
+        username = self.username_input.text()
+        password = self.password_input.text()
+        hashed_pw = hash_password(password)
+
+        conn = sqlite3.connect("medical_system.db")
+        c = conn.cursor()
+        c.execute("SELECT * FROM Users WHERE username = ? AND password = ?", (username, hashed_pw))
+        user = c.fetchone()
+
+        if user:
+            role = user[3]
+            self.open_dashboard(username, role)
+        else:
+            QMessageBox.warning(self, "Login Failed", "Incorrect username or password!")
+
+    def open_dashboard(self, username, role):
+        self.hide()
+        if role == 'admin':
+            self.admin_window = AdminWindow(username)
+            self.admin_window.show()
+
+
+def main():
+    app = QApplication(sys.argv)
+
+    # Initialize DB tables
+    init_db()
+    alter_users_table()
+    alter_products_table()
+
+    app.setQuitOnLastWindowClosed(False) # Prevent app from closing when login window is closed
+
+    # Show login window
+    login_window = LoginWindow()
+    login_window.show()
+
+    sys.exit(app.exec_())
+
+
+if __name__ == "__main__":
+    main()
