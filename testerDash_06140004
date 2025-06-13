@@ -1,0 +1,1041 @@
+import sys
+import sqlite3
+import os
+import datetime
+from datetime import datetime, timedelta, date
+import pandas as pd
+from fpdf import FPDF
+import platform
+
+from PyQt5.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QPushButton, QLabel, QFrame, QStackedWidget, QTableWidget,
+    QTableWidgetItem, QHeaderView, QMessageBox, QFileDialog,
+    QComboBox, QTextEdit, QScrollArea, QGroupBox, QFormLayout,
+    QLineEdit, QDateEdit, QTabWidget, QSplitter, QGridLayout
+)
+from PyQt5.QtCore import Qt, QDate, QTimer
+from PyQt5.QtGui import QFont, QPixmap, QPalette, QColor
+
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.figure import Figure
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+db_path = os.path.join(BASE_DIR, "testing_system.db")
+
+def create_database_tables():
+    """Create all database tables with proper schema"""
+    try:
+        with sqlite3.connect(db_path) as conn:
+            cursor = conn.cursor()
+            cursor.executescript('''
+                CREATE TABLE IF NOT EXISTS Testing (
+                    test_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    product_id INTEGER NOT NULL,
+                    test_start DATETIME NOT NULL,
+                    test_end DATETIME,
+                    test_status TEXT NOT NULL,
+                    test_result TEXT,
+                    test_image TEXT
+                );
+
+                CREATE TABLE IF NOT EXISTS Notifications (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER,
+                    message TEXT,
+                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    read INTEGER DEFAULT 0
+                );
+            ''')
+            print("Database tables created successfully.")
+    except sqlite3.Error as e:
+        print(f"Database error occurred: {e}")
+
+class TesterDashboard(QMainWindow):
+    def __init__(self, user_info=None):
+        super().__init__()
+        self.user_info = user_info or {'user_id': 1, 'username': 'tester', 'role_name': 'tester'}
+        self.user_id = self.user_info.get('user_id', 1)
+        self.attached_file_path = None
+        
+        self.setWindowTitle("🧪 Medical Testing System - Tester Dashboard")
+        self.setGeometry(100, 100, 1400, 900)
+        
+        # Apply modern styling
+        self.setStyleSheet("""
+            QMainWindow {
+                background-color: #f5f5f5;
+            }
+            QPushButton {
+                background-color: #4CAF50;
+                color: white;
+                border: none;
+                border-radius: 8px;
+                padding: 10px 20px;
+                font-weight: bold;
+                font-size: 14px;
+            }
+            QPushButton:hover {
+                background-color: #45a049;
+            }
+            QPushButton:pressed {
+                background-color: #3d8b40;
+            }
+            QLabel {
+                color: #333;
+                font-size: 14px;
+            }
+            QGroupBox {
+                font-weight: bold;
+                border: 2px solid #ddd;
+                border-radius: 8px;
+                margin-top: 10px;
+                padding-top: 10px;
+                background-color: white;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 10px;
+                padding: 0 5px 0 5px;
+            }
+            QTableWidget {
+                border: 1px solid #ddd;
+                border-radius: 8px;
+                background-color: white;
+                alternate-background-color: #f9f9f9;
+            }
+            QComboBox, QLineEdit, QTextEdit {
+                border: 2px solid #ddd;
+                border-radius: 5px;
+                padding: 8px;
+                background-color: white;
+            }
+            QComboBox:focus, QLineEdit:focus, QTextEdit:focus {
+                border-color: #4CAF50;
+            }
+        """)
+        
+        self.setupUI()
+
+    def get_current_user_id(self):
+        return self.user_id
+
+    def setupUI(self):
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+        
+        # Main layout
+        main_layout = QHBoxLayout()
+        central_widget.setLayout(main_layout)
+        
+        # Create sidebar
+        self.create_sidebar(main_layout)
+        
+        # Create main content area
+        self.content_stack = QStackedWidget()
+        main_layout.addWidget(self.content_stack, 3)
+        
+        # Initialize with Product Assignments
+        self.switch_frame("Product Assignments")
+
+    def create_sidebar(self, main_layout):
+        # Sidebar frame
+        sidebar = QFrame()
+        sidebar.setFixedWidth(300)
+        sidebar.setStyleSheet("""
+            QFrame {
+                background: qlineargradient(x1: 0, y1: 0, x2: 0, y2: 1,
+                    stop: 0 #E91E63, stop: 1 #AD1457);
+                border-radius: 10px;
+                margin: 10px;
+            }
+            QPushButton {
+                background-color: rgba(255, 255, 255, 0.1);
+                color: white;
+                border: 2px solid rgba(255, 255, 255, 0.3);
+                border-radius: 8px;
+                padding: 12px 20px;
+                font-weight: bold;
+                font-size: 14px;
+                text-align: left;
+                margin: 5px;
+            }
+            QPushButton:hover {
+                background-color: rgba(255, 255, 255, 0.2);
+                border-color: rgba(255, 255, 255, 0.5);
+            }
+            QPushButton:checked {
+                background-color: rgba(255, 255, 255, 0.3);
+                border-color: white;
+            }
+        """)
+        
+        sidebar_layout = QVBoxLayout()
+        sidebar.setLayout(sidebar_layout)
+        
+        # Title
+        title_label = QLabel("🧪 Tester Panel")
+        title_label.setAlignment(Qt.AlignCenter)
+        title_label.setFont(QFont("Arial", 18, QFont.Bold))
+        title_label.setStyleSheet("color: white; padding: 20px; background: transparent;")
+        sidebar_layout.addWidget(title_label)
+        
+        # User info
+        user_info_label = QLabel(f"👤 {self.user_info.get('username', 'Tester')}")
+        user_info_label.setAlignment(Qt.AlignCenter)
+        user_info_label.setStyleSheet("color: rgba(255, 255, 255, 0.8); padding: 10px; background: transparent;")
+        sidebar_layout.addWidget(user_info_label)
+        
+        # Navigation buttons
+        self.nav_buttons = {}
+        options = [
+            ("📋 Product Assignments", "Product Assignments"),
+            ("✏️ Test Result Update", "Test Result Update"),
+            ("📅 Test Schedule", "Test Schedule"),
+            ("📊 Progress Tracker", "Progress Tracker"),
+            ("📜 Test History", "Test History"),
+            ("📈 Test Analysis", "Test Analysis"),
+            ("🔔 Notifications", "Notifications"),
+        ]
+        
+        for display_text, section in options:
+            btn = QPushButton(display_text)
+            btn.setCheckable(True)
+            btn.clicked.connect(lambda checked, s=section: self.switch_frame(s))
+            sidebar_layout.addWidget(btn)
+            self.nav_buttons[section] = btn
+        
+        sidebar_layout.addStretch()
+        
+        # Logout button
+        logout_btn = QPushButton("🚪 Logout")
+        logout_btn.clicked.connect(self.logout)
+        logout_btn.setStyleSheet("""
+            QPushButton {
+                background-color: rgba(244, 67, 54, 0.8);
+                border-color: rgba(244, 67, 54, 1);
+            }
+            QPushButton:hover {
+                background-color: rgba(244, 67, 54, 1);
+            }
+        """)
+        sidebar_layout.addWidget(logout_btn)
+        
+        main_layout.addWidget(sidebar, 1)
+
+    def logout(self):
+        """Handle logout"""
+        reply = QMessageBox.question(self, 'Logout', 'Are you sure you want to logout?',
+                                   QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        
+        if reply == QMessageBox.Yes:
+            print(f"✓ User '{self.user_info.get('username')}' logged out from Tester Dashboard")
+            self.close()
+            # Show the login window again
+            self.show_login_window()
+    
+    def show_login_window(self):
+        """Show the login window again"""
+        try:
+            # Import here to avoid circular imports
+            from user1 import SignInSignUpWindow
+            self.login_window = SignInSignUpWindow()
+            self.login_window.show()
+        except Exception as e:
+            print(f"✗ Error opening login window: {e}")
+            # If we can't open login window, just exit the application
+            QApplication.quit()
+
+    def switch_frame(self, section):
+        # Clear current content
+        while self.content_stack.count():
+            child = self.content_stack.widget(0)
+            self.content_stack.removeWidget(child)
+            child.deleteLater()
+        
+        # Update button states
+        for btn_name, btn in self.nav_buttons.items():
+            btn.setChecked(btn_name == section)
+        
+        # Create new content based on section
+        content_widget = self.create_content_widget(section)
+        self.content_stack.addWidget(content_widget)
+
+    def create_content_widget(self, section):
+        """Create content widget for the selected section"""
+        widget = QWidget()
+        layout = QVBoxLayout()
+        widget.setLayout(layout)
+        
+        # Add title
+        title = QLabel(f"📋 {section}")
+        title.setFont(QFont("Arial", 20, QFont.Bold))
+        title.setStyleSheet("color: #2E7D32; padding: 20px; background: white; border-radius: 8px; margin: 10px;")
+        title.setAlignment(Qt.AlignCenter)
+        layout.addWidget(title)
+
+        if section == "Product Assignments":
+            self.create_product_assignments_section(layout)
+        elif section == "Test Result Update":
+            self.create_test_result_update_section(layout)
+        elif section == "Test Schedule":
+            self.create_test_schedule_section(layout)
+        elif section == "Progress Tracker":
+            self.create_progress_tracker_section(layout)
+        elif section == "Test History":
+            self.create_test_history_section(layout)
+        elif section == "Test Analysis":
+            self.create_test_analysis_section(layout)
+        elif section == "Notifications":
+            self.create_notifications_section(layout)
+        else:
+            # Placeholder for other sections
+            placeholder = QLabel(f"📋 {section} functionality will be implemented here.")
+            placeholder.setAlignment(Qt.AlignCenter)
+            placeholder.setStyleSheet("color: #666; font-size: 16px; padding: 40px;")
+            layout.addWidget(placeholder)
+
+        return widget
+
+    def create_product_assignments_section(self, layout):
+        """Create the product assignments section"""
+        # Create table for assigned products
+        table_group = QGroupBox("Assigned Products")
+        table_layout = QVBoxLayout()
+        
+        self.assignments_table = QTableWidget()
+        self.assignments_table.setColumnCount(5)
+        self.assignments_table.setHorizontalHeaderLabels([
+            "Product ID", "Product Name", "Test Status", "Location", "Batch"
+        ])
+        self.assignments_table.horizontalHeader().setStretchLastSection(True)
+        self.assignments_table.setAlternatingRowColors(True)
+        self.assignments_table.setSelectionBehavior(QTableWidget.SelectRows)
+        
+        try:
+            conn = sqlite3.connect('testing_system.db')
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                SELECT 
+                    s.id,
+                    s.product_name, 
+                    COALESCE(t.test_status, 'Not Started') as test_status,
+                    s.location,
+                    s.batch_number
+                FROM samples s
+                LEFT JOIN Testing t ON t.product_id = s.id AND t.user_id = ?
+                WHERE s.tester = (SELECT username FROM users WHERE user_id = ?)
+                ORDER BY s.product_name
+            """, (self.user_id, self.user_id))
+            
+            rows = cursor.fetchall()
+            
+            if rows:
+                self.assignments_table.setRowCount(len(rows))
+                for row_idx, row_data in enumerate(rows):
+                    for col_idx, value in enumerate(row_data):
+                        item = QTableWidgetItem(str(value) if value else "")
+                        self.assignments_table.setItem(row_idx, col_idx, item)
+            else:
+                # Show message when no assignments
+                no_data_label = QLabel("No products assigned to you yet.")
+                no_data_label.setAlignment(Qt.AlignCenter)
+                no_data_label.setStyleSheet("color: #666; font-size: 16px; padding: 40px;")
+                table_layout.addWidget(no_data_label)
+                
+        except sqlite3.Error as e:
+            error_label = QLabel(f"Error loading assignments: {str(e)}")
+            error_label.setStyleSheet("color: red; padding: 20px;")
+            table_layout.addWidget(error_label)
+        finally:
+            if conn:
+                conn.close()
+        
+        if hasattr(self, 'assignments_table') and self.assignments_table.rowCount() > 0:
+            table_layout.addWidget(self.assignments_table)
+        
+        # Action buttons
+        button_layout = QHBoxLayout()
+        
+        start_btn = QPushButton("▶️ Start Test")
+        start_btn.clicked.connect(self.start_test)
+        button_layout.addWidget(start_btn)
+        
+        pause_btn = QPushButton("⏸️ Pause Test")
+        pause_btn.clicked.connect(self.pause_test)
+        button_layout.addWidget(pause_btn)
+        
+        end_btn = QPushButton("⏹️ End Test")
+        end_btn.clicked.connect(self.end_test)
+        button_layout.addWidget(end_btn)
+        
+        details_btn = QPushButton("👁️ View Details")
+        details_btn.clicked.connect(self.view_product_details)
+        button_layout.addWidget(details_btn)
+        
+        table_layout.addLayout(button_layout)
+        table_group.setLayout(table_layout)
+        layout.addWidget(table_group)
+
+    def create_test_result_update_section(self, layout):
+        """Create the test result update section"""
+        update_group = QGroupBox("Update Test Result Status")
+        update_layout = QFormLayout()
+        
+        # Product selection
+        self.product_combo = QComboBox()
+        self.product_combo.setMinimumWidth(400)
+        update_layout.addRow("Select Product:", self.product_combo)
+        
+        # Load products
+        try:
+            conn = sqlite3.connect('testing_system.db')
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT s.id, s.product_name 
+                FROM samples s
+                WHERE s.tester = (SELECT username FROM users WHERE user_id = ?)
+            """, (self.user_id,))
+            products = cursor.fetchall()
+            
+            if products:
+                for product_id, product_name in products:
+                    self.product_combo.addItem(f"{product_id} - {product_name}", product_id)
+            else:
+                self.product_combo.addItem("No products assigned", None)
+                
+        except sqlite3.Error as e:
+            QMessageBox.critical(None, "Database Error", f"Failed to load products: {e}")
+        finally:
+            if conn:
+                conn.close()
+        
+        # Test status
+        self.status_combo = QComboBox()
+        self.status_combo.addItems(["Not Started", "In Progress", "Completed", "Failed", "Retest Required"])
+        update_layout.addRow("Test Status:", self.status_combo)
+        
+        # Test result
+        self.result_text = QTextEdit()
+        self.result_text.setMaximumHeight(100)
+        update_layout.addRow("Test Result:", self.result_text)
+        
+        # Image upload
+        image_layout = QHBoxLayout()
+        self.image_path_label = QLabel("No image selected")
+        attach_btn = QPushButton("📎 Attach Image")
+        attach_btn.clicked.connect(self.attach_file)
+        image_layout.addWidget(self.image_path_label)
+        image_layout.addWidget(attach_btn)
+        update_layout.addRow("Upload Image:", image_layout)
+        
+        # Update button
+        update_btn = QPushButton("✅ Update Status")
+        update_btn.clicked.connect(self.update_test_status)
+        update_layout.addWidget(update_btn)
+        
+        update_group.setLayout(update_layout)
+        layout.addWidget(update_group)
+
+    def create_test_schedule_section(self, layout):
+        """Create the test schedule section"""
+        schedule_group = QGroupBox("Test Schedule")
+        schedule_layout = QVBoxLayout()
+        
+        # Date range selection
+        date_layout = QHBoxLayout()
+        date_layout.addWidget(QLabel("From:"))
+        
+        self.start_date = QDateEdit(QDate.currentDate())
+        self.start_date.setCalendarPopup(True)
+        date_layout.addWidget(self.start_date)
+        
+        date_layout.addWidget(QLabel("To:"))
+        
+        self.end_date = QDateEdit(QDate.currentDate())
+        self.end_date.setCalendarPopup(True)
+        date_layout.addWidget(self.end_date)
+        
+        refresh_btn = QPushButton("🔄 Refresh Schedule")
+        refresh_btn.clicked.connect(self.load_test_schedule)
+        date_layout.addWidget(refresh_btn)
+        
+        date_layout.addStretch()
+        schedule_layout.addLayout(date_layout)
+        
+        # Schedule table
+        self.schedule_table = QTableWidget()
+        self.schedule_table.setColumnCount(4)
+        self.schedule_table.setHorizontalHeaderLabels([
+            "Product", "Status", "Test Start", "Test End"
+        ])
+        self.schedule_table.horizontalHeader().setStretchLastSection(True)
+        schedule_layout.addWidget(self.schedule_table)
+        
+        schedule_group.setLayout(schedule_layout)
+        layout.addWidget(schedule_group)
+        
+        # Load initial schedule
+        self.load_test_schedule()
+
+    def create_progress_tracker_section(self, layout):
+        """Create the progress tracker section"""
+        progress_group = QGroupBox("Progress Tracker")
+        progress_layout = QVBoxLayout()
+        
+        # Create matplotlib figure
+        figure = Figure(figsize=(10, 6))
+        canvas = FigureCanvas(figure)
+        
+        # Get data from database
+        try:
+            conn = sqlite3.connect('testing_system.db')
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                SELECT test_status, COUNT(*) 
+                FROM Testing 
+                WHERE user_id = ? 
+                GROUP BY test_status
+            """, (self.user_id,))
+            status_data = cursor.fetchall()
+            
+            if status_data:
+                ax = figure.add_subplot(111)
+                statuses, counts = zip(*status_data)
+                
+                color_map = {
+                    "Completed": "green",
+                    "In Progress": "blue",
+                    "Failed": "red",
+                    "Retest Required": "orange",
+                    "Not Started": "gray"
+                }
+                bar_colors = [color_map.get(status, 'black') for status in statuses]
+                ax.bar(statuses, counts, color=bar_colors)
+                ax.set_title('Test Status Summary')
+                ax.set_ylabel('Number of Tests')
+                
+                # Calculate progress percentage
+                total = sum(counts)
+                completed = sum(c for s, c in zip(statuses, counts) if s == "Completed")
+                progress_percent = int((completed / total) * 100) if total > 0 else 0
+                
+                progress_label = QLabel(f"Overall Progress: {progress_percent}% ({completed}/{total} tests completed)")
+                progress_label.setAlignment(Qt.AlignCenter)
+                progress_label.setStyleSheet("font-size: 16px; font-weight: bold; color: #2E7D32; padding: 10px;")
+                progress_layout.addWidget(progress_label)
+            else:
+                ax = figure.add_subplot(111)
+                ax.text(0.5, 0.5, 'No test data available', ha='center', va='center', transform=ax.transAxes)
+                ax.set_title('Test Status Summary')
+                
+        except sqlite3.Error as e:
+            ax = figure.add_subplot(111)
+            ax.text(0.5, 0.5, f'Database error: {e}', ha='center', va='center', transform=ax.transAxes)
+        finally:
+            if conn:
+                conn.close()
+        
+        canvas.draw()
+        progress_layout.addWidget(canvas)
+        
+        progress_group.setLayout(progress_layout)
+        layout.addWidget(progress_group)
+
+    def create_test_history_section(self, layout):
+        """Create the test history section"""
+        history_group = QGroupBox("Test History")
+        history_layout = QVBoxLayout()
+        
+        # Export buttons
+        export_layout = QHBoxLayout()
+        excel_btn = QPushButton("📊 Export to Excel")
+        excel_btn.clicked.connect(lambda: self.export_history("excel"))
+        pdf_btn = QPushButton("📄 Export to PDF")
+        pdf_btn.clicked.connect(lambda: self.export_history("pdf"))
+        
+        export_layout.addWidget(excel_btn)
+        export_layout.addWidget(pdf_btn)
+        export_layout.addStretch()
+        history_layout.addLayout(export_layout)
+        
+        # History table
+        self.history_table = QTableWidget()
+        self.history_table.setColumnCount(5)
+        self.history_table.setHorizontalHeaderLabels([
+            "Product", "Status", "Start Date", "End Date", "Result"
+        ])
+        self.history_table.horizontalHeader().setStretchLastSection(True)
+        
+        # Load test history
+        try:
+            conn = sqlite3.connect('testing_system.db')
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT s.product_name, t.test_status, t.test_start, t.test_end, t.test_result
+                FROM Testing t
+                INNER JOIN samples s ON t.product_id = s.id
+                WHERE t.user_id = ?
+                ORDER BY t.test_start DESC
+            """, (self.user_id,))
+            
+            history_rows = cursor.fetchall()
+            
+            if history_rows:
+                self.history_table.setRowCount(len(history_rows))
+                for row_idx, row_data in enumerate(history_rows):
+                    for col_idx, value in enumerate(row_data):
+                        item = QTableWidgetItem(str(value) if value is not None else "N/A")
+                        self.history_table.setItem(row_idx, col_idx, item)
+            
+        except sqlite3.Error as e:
+            QMessageBox.critical(None, "Database Error", f"Failed to load test history: {e}")
+        finally:
+            if conn:
+                conn.close()
+        
+        history_layout.addWidget(self.history_table)
+        history_group.setLayout(history_layout)
+        layout.addWidget(history_group)
+
+    def create_test_analysis_section(self, layout):
+        """Create the test analysis section"""
+        analysis_group = QGroupBox("Test Analysis")
+        analysis_layout = QVBoxLayout()
+        
+        # Summary statistics
+        summary_group = QGroupBox("Summary Statistics")
+        summary_layout = QVBoxLayout()
+        
+        try:
+            conn = sqlite3.connect('testing_system.db')
+            cursor = conn.cursor()
+            
+            # Get test statistics
+            cursor.execute("""
+                SELECT test_status, COUNT(*) 
+                FROM Testing 
+                WHERE user_id = ? 
+                GROUP BY test_status
+            """, (self.user_id,))
+            
+            status_counts = dict(cursor.fetchall())
+            total_tests = sum(status_counts.values())
+            
+            # Calculate average duration
+            cursor.execute("""
+                SELECT AVG(julianday(test_end) - julianday(test_start)) as avg_duration
+                FROM Testing 
+                WHERE user_id = ? AND test_end IS NOT NULL AND test_start IS NOT NULL
+            """, (self.user_id,))
+            
+            avg_duration_result = cursor.fetchone()
+            avg_duration = round(avg_duration_result[0], 2) if avg_duration_result[0] else 0
+            
+            # Create summary text
+            summary_text = f"""
+🧪 Total Tests: {total_tests}
+✅ Completed: {status_counts.get('Completed', 0)}
+⏳ In Progress: {status_counts.get('In Progress', 0)}
+💤 Not Started: {status_counts.get('Not Started', 0)}
+❌ Failed: {status_counts.get('Failed', 0)}
+🔁 Retest Required: {status_counts.get('Retest Required', 0)}
+⏱ Average Duration: {avg_duration} days
+            """
+            
+            summary_label = QLabel(summary_text)
+            summary_label.setStyleSheet("font-family: monospace; padding: 10px; background: #f9f9f9; border-radius: 5px;")
+            summary_layout.addWidget(summary_label)
+            
+        except sqlite3.Error as e:
+            error_label = QLabel(f"Error loading analysis data: {e}")
+            error_label.setStyleSheet("color: red; padding: 10px;")
+            summary_layout.addWidget(error_label)
+        finally:
+            if conn:
+                conn.close()
+        
+        summary_group.setLayout(summary_layout)
+        analysis_layout.addWidget(summary_group)
+        
+        analysis_group.setLayout(analysis_layout)
+        layout.addWidget(analysis_group)
+
+    def create_notifications_section(self, layout):
+        """Create the notifications section"""
+        notifications_group = QGroupBox("Notifications")
+        notifications_layout = QVBoxLayout()
+        
+        # Notifications table
+        self.notifications_table = QTableWidget()
+        self.notifications_table.setColumnCount(3)
+        self.notifications_table.setHorizontalHeaderLabels([
+            "Message", "Timestamp", "Read"
+        ])
+        self.notifications_table.horizontalHeader().setStretchLastSection(True)
+        
+        # Load notifications
+        try:
+            conn = sqlite3.connect('testing_system.db')
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                SELECT message, timestamp, read FROM Notifications
+                WHERE user_id = ?
+                ORDER BY timestamp DESC
+            """, (self.user_id,))
+            
+            notifications = cursor.fetchall()
+            
+            if notifications:
+                self.notifications_table.setRowCount(len(notifications))
+                for row_idx, (message, timestamp, read_status) in enumerate(notifications):
+                    self.notifications_table.setItem(row_idx, 0, QTableWidgetItem(message))
+                    self.notifications_table.setItem(row_idx, 1, QTableWidgetItem(timestamp))
+                    self.notifications_table.setItem(row_idx, 2, QTableWidgetItem("Yes" if read_status else "No"))
+                
+                # Mark notifications as read
+                cursor.execute("""
+                    UPDATE Notifications SET read = 1
+                    WHERE user_id = ? AND read = 0
+                """, (self.user_id,))
+                conn.commit()
+            
+        except sqlite3.Error as e:
+            error_label = QLabel(f"Error loading notifications: {e}")
+            error_label.setStyleSheet("color: red; padding: 10px;")
+            notifications_layout.addWidget(error_label)
+        finally:
+            if conn:
+                conn.close()
+        
+        notifications_layout.addWidget(self.notifications_table)
+        notifications_group.setLayout(notifications_layout)
+        layout.addWidget(notifications_group)
+
+    # Action methods
+    def get_selected_product_id(self):
+        """Get the selected product ID from assignments table"""
+        current_row = self.assignments_table.currentRow()
+        if current_row >= 0:
+            return self.assignments_table.item(current_row, 0).text()
+        return None
+
+    def start_test(self):
+        """Start a test for the selected product"""
+        product_id = self.get_selected_product_id()
+        if not product_id:
+            QMessageBox.warning(self, "No Selection", "Please select a product to start testing.")
+            return
+        
+        try:
+            conn = sqlite3.connect('testing_system.db')
+            cursor = conn.cursor()
+            
+            # Check if test already exists
+            cursor.execute("SELECT test_status FROM Testing WHERE product_id = ? AND user_id = ?", 
+                          (product_id, self.user_id))
+            existing = cursor.fetchone()
+            
+            if existing:
+                if existing[0] in ['In Progress', 'Completed']:
+                    QMessageBox.information(self, "Test Status", f"Test is already {existing[0]}")
+                    return
+                else:
+                    # Update existing test
+                    cursor.execute("""
+                        UPDATE Testing SET test_status = 'In Progress', test_start = ?
+                        WHERE product_id = ? AND user_id = ?
+                    """, (datetime.now().strftime('%Y-%m-%d %H:%M:%S'), product_id, self.user_id))
+            else:
+                # Insert new test
+                cursor.execute("""
+                    INSERT INTO Testing (product_id, user_id, test_status, test_start)
+                    VALUES (?, ?, 'In Progress', ?)
+                """, (product_id, self.user_id, datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+            
+            conn.commit()
+            QMessageBox.information(self, "Success", f"Test started for Product ID {product_id}")
+            self.switch_frame("Product Assignments")  # Refresh
+            
+        except sqlite3.Error as e:
+            QMessageBox.critical(self, "Database Error", f"Error starting test: {e}")
+        finally:
+            if conn:
+                conn.close()
+
+    def pause_test(self):
+        """Pause a test for the selected product"""
+        product_id = self.get_selected_product_id()
+        if not product_id:
+            QMessageBox.warning(self, "No Selection", "Please select a product to pause testing.")
+            return
+        
+        try:
+            conn = sqlite3.connect('testing_system.db')
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                UPDATE Testing SET test_status = 'Paused'
+                WHERE product_id = ? AND user_id = ? AND test_status = 'In Progress'
+            """, (product_id, self.user_id))
+            
+            if cursor.rowcount > 0:
+                conn.commit()
+                QMessageBox.information(self, "Success", f"Test paused for Product ID {product_id}")
+                self.switch_frame("Product Assignments")  # Refresh
+            else:
+                QMessageBox.information(self, "No Change", "No active test found to pause.")
+                
+        except sqlite3.Error as e:
+            QMessageBox.critical(self, "Database Error", f"Error pausing test: {e}")
+        finally:
+            if conn:
+                conn.close()
+
+    def end_test(self):
+        """End a test for the selected product"""
+        product_id = self.get_selected_product_id()
+        if not product_id:
+            QMessageBox.warning(self, "No Selection", "Please select a product to end testing.")
+            return
+        
+        try:
+            conn = sqlite3.connect('testing_system.db')
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                UPDATE Testing SET test_status = 'Completed', test_end = ?
+                WHERE product_id = ? AND user_id = ?
+            """, (datetime.now().strftime('%Y-%m-%d %H:%M:%S'), product_id, self.user_id))
+            
+            if cursor.rowcount > 0:
+                conn.commit()
+                QMessageBox.information(self, "Success", f"Test completed for Product ID {product_id}")
+                self.switch_frame("Product Assignments")  # Refresh
+            else:
+                QMessageBox.information(self, "No Change", "No test found to complete.")
+                
+        except sqlite3.Error as e:
+            QMessageBox.critical(self, "Database Error", f"Error ending test: {e}")
+        finally:
+            if conn:
+                conn.close()
+
+    def view_product_details(self):
+        """View details of the selected product"""
+        product_id = self.get_selected_product_id()
+        if not product_id:
+            QMessageBox.warning(self, "No Selection", "Please select a product to view details.")
+            return
+        
+        try:
+            conn = sqlite3.connect('testing_system.db')
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                SELECT product_name, manufacture_date, expired_date, arrival_date,
+                       location, batch_number, barcode, sku, branch
+                FROM samples WHERE id = ?
+            """, (product_id,))
+            
+            product = cursor.fetchone()
+            
+            if product:
+                details_text = f"""
+Product Name: {product[0]}
+Manufacture Date: {product[1]}
+Expiry Date: {product[2]}
+Arrival Date: {product[3]}
+Location: {product[4]}
+Batch: {product[5]}
+Barcode: {product[6]}
+SKU: {product[7]}
+Branch: {product[8]}
+                """
+                QMessageBox.information(self, f"Product Details - {product[0]}", details_text)
+            else:
+                QMessageBox.information(self, "No Data", "No details found for the selected product.")
+                
+        except sqlite3.Error as e:
+            QMessageBox.critical(self, "Database Error", f"Error fetching product details: {e}")
+        finally:
+            if conn:
+                conn.close()
+
+    def attach_file(self):
+        """Attach an image file"""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Select Image", "", 
+            "Image files (*.png *.jpg *.jpeg *.bmp *.gif);;All files (*.*)"
+        )
+        
+        if file_path:
+            self.attached_file_path = file_path
+            self.image_path_label.setText(f"Selected: {os.path.basename(file_path)}")
+        else:
+            self.attached_file_path = None
+            self.image_path_label.setText("No image selected")
+
+    def update_test_status(self):
+        """Update test status, result, and image"""
+        if not hasattr(self, 'product_combo') or self.product_combo.currentData() is None:
+            QMessageBox.warning(self, "Error", "Please select a product")
+            return
+        
+        product_id = self.product_combo.currentData()
+        test_status = self.status_combo.currentText()
+        test_result = self.result_text.toPlainText().strip()
+        
+        try:
+            conn = sqlite3.connect('testing_system.db')
+            cursor = conn.cursor()
+            
+            # Check if test record exists
+            cursor.execute("SELECT test_id FROM Testing WHERE user_id = ? AND product_id = ?",
+                          (self.user_id, product_id))
+            existing = cursor.fetchone()
+            
+            current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            
+            if existing:
+                cursor.execute("""
+                    UPDATE Testing
+                    SET test_status = ?, test_result = ?, test_end = ?, test_image = ?
+                    WHERE test_id = ?
+                """, (test_status, test_result, current_time, self.attached_file_path, existing[0]))
+            else:
+                cursor.execute("""
+                    INSERT INTO Testing (user_id, product_id, test_start, test_status, test_result, test_image)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                """, (self.user_id, product_id, current_time, test_status, test_result, self.attached_file_path))
+            
+            conn.commit()
+            QMessageBox.information(self, "Success", "Test status updated successfully!")
+            
+            # Clear form
+            self.status_combo.setCurrentIndex(0)
+            self.result_text.clear()
+            self.attached_file_path = None
+            self.image_path_label.setText("No image selected")
+            
+        except sqlite3.Error as e:
+            QMessageBox.critical(self, "Database Error", f"Failed to update test status: {e}")
+        finally:
+            if conn:
+                conn.close()
+
+    def load_test_schedule(self):
+        """Load test schedule for the selected date range"""
+        if not hasattr(self, 'schedule_table'):
+            return
+        
+        start_date = self.start_date.date().toPyDate()
+        end_date = self.end_date.date().toPyDate()
+        
+        try:
+            conn = sqlite3.connect('testing_system.db')
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                SELECT s.product_name, t.test_status, t.test_start, t.test_end
+                FROM Testing t
+                INNER JOIN samples s ON t.product_id = s.id
+                WHERE t.user_id = ? AND (
+                    DATE(t.test_start) BETWEEN ? AND ? OR
+                    DATE(t.test_end) BETWEEN ? AND ?
+                )
+                ORDER BY t.test_start
+            """, (self.user_id, start_date, end_date, start_date, end_date))
+            
+            schedule_data = cursor.fetchall()
+            
+            self.schedule_table.setRowCount(len(schedule_data))
+            for row_idx, row_data in enumerate(schedule_data):
+                for col_idx, value in enumerate(row_data):
+                    item = QTableWidgetItem(str(value) if value else "N/A")
+                    self.schedule_table.setItem(row_idx, col_idx, item)
+                    
+        except sqlite3.Error as e:
+            QMessageBox.critical(self, "Database Error", f"Error loading schedule: {e}")
+        finally:
+            if conn:
+                conn.close()
+
+    def export_history(self, export_type):
+        """Export test history to Excel or PDF"""
+        if not hasattr(self, 'history_table') or self.history_table.rowCount() == 0:
+            QMessageBox.warning(self, "No Data", "No test history to export")
+            return
+        
+        try:
+            # Collect data from table
+            data = []
+            headers = []
+            for col in range(self.history_table.columnCount()):
+                headers.append(self.history_table.horizontalHeaderItem(col).text())
+            
+            for row in range(self.history_table.rowCount()):
+                row_data = []
+                for col in range(self.history_table.columnCount()):
+                    item = self.history_table.item(row, col)
+                    row_data.append(item.text() if item else "")
+                data.append(row_data)
+            
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            
+            if export_type == "excel":
+                filename = f"test_history_{timestamp}.xlsx"
+                df = pd.DataFrame(data, columns=headers)
+                df.to_excel(filename, index=False)
+            elif export_type == "pdf":
+                filename = f"test_history_{timestamp}.pdf"
+                self.export_to_pdf(headers, data, filename)
+            
+            QMessageBox.information(self, "Export Successful", f"Data exported to {filename}")
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Export Error", f"Failed to export: {str(e)}")
+
+    def export_to_pdf(self, headers, data, filename):
+        """Export data to PDF file"""
+        pdf = FPDF()
+        pdf.add_page()
+        pdf.set_font("Arial", size=10)
+        
+        pdf.cell(200, 10, txt="Test History Report", ln=1, align='C')
+        pdf.cell(200, 10, txt=f"Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", ln=1, align='C')
+        
+        col_widths = [40, 30, 30, 30, 60]
+        
+        # Header row
+        for i, header in enumerate(headers):
+            pdf.cell(col_widths[i], 10, txt=header, border=1)
+        pdf.ln()
+        
+        # Data rows
+        for row in data:
+            for i, item in enumerate(row):
+                pdf.cell(col_widths[i], 10, txt=str(item)[:20], border=1)  # Truncate long text
+            pdf.ln()
+        
+        pdf.output(filename)
+
+def main():
+    app = QApplication(sys.argv)
+    
+    # Create database tables
+    create_database_tables()
+    
+    # Create and show dashboard
+    dashboard = TesterDashboard()
+    dashboard.show()
+    
+    sys.exit(app.exec_())
+
+if __name__ == '__main__':
+    main() 
