@@ -1,0 +1,86 @@
+1. Inventory Page [index 0, created in create_inventory_panel()]
+create_inventory_panel() – Builds the table, search bar, filter widgets, paging controls and (for super-admin) extra bulk-action buttons.
+load_inventory_data(page=1, items_per_page=20) – Runs the JOIN query that feeds the table, formats dates and images, handles paging.
+update_inventory_table_with_results() – Helper run by the global search to overwrite the table with search hits.
+Filtering / paging helpers:
+apply_filters(), clear_filters() – build extra WHERE clauses for owner / status etc.
+prev_page(), next_page() – change page, call load_inventory_data().
+Admin-only helpers:
+show_inventory_admin_features() / hide_inventory_admin_features() – toggles bulk buttons when super-admin mode is on/off.
+
+
+
+2. Pending-Approvals Page [index 1, create_pending_panel()]
+create_pending_panel() – Creates table with approve / reject buttons per row.
+load_pending_data() – Pulls products whose status = ‘pending’, builds buttons for each row.
+Approval workflow:
+approve_product(product_id) – marks product approved, logs activity.
+reject_product(product_id) → in-line mini-dialog → process_rejection().
+Misc:
+view_product_details(product_id) – opens a rich detail dialog.
+show_pending_admin_features() / hide_pending_admin_features() – reveal/hide extra controls for admins.
+
+
+
+3. Maturation Page [index 2, create_maturation_panel()]
+create_maturation_panel() – Builds header, threshold label, “⚙️ settings” button, email-summary card, scroll area for cards, “Select All / Remind Again” controls.
+load_maturation_threshold() / save_maturation_threshold() – read & persist the “days-left” window ( now default 60 days ).
+load_maturation_data() – Core query that fills card grid, triggers check_and_send_daily_notifications().
+Notification pipeline:
+check_and_send_daily_notifications() → send_maturation_notification_emails() → create_maturation_email_content() (where the CRITICAL / WARNING / NOTICE logic now lives) → send_actual_email().
+record_sent_notifications() & update_email_summary_card() maintain the log + UI.
+Settings dialog: open_maturation_settings() (super-admin only) → save_threshold_settings().
+Bulk helpers: select_all_products(), deselect_all_products(), send_reminder_emails().
+
+
+
+4. Assign-Tester Page [index 3, create_assign_panel()]
+create_assign_panel() – Six-column table and header bar with “📋 View Assignment Records”.
+load_assign_data() – Pulls products whose tester_id IS NULL, populates tester dropdowns.
+assign_tester_to_product(product_id, row) – validates selection, inserts into product_tester_assignments, updates products.tester_id, commits, emails tester + owner.
+send_assignment_email() – Formats the message, calls send_actual_email() with CC.
+view_assignment_records() – Opens history dialog (7-column table).
+
+
+
+5. Chat Page [index 4, create_chat_panel()]
+create_chat_panel() – Global chat pane, user list sidebar, rich-text input.
+load_chat_data() – Prepares SQLite tables if needed, loads user list & messages.
+load_chat_messages() / refresh_chat() – periodic refresh of global feed.
+Private chat helpers:
+load_available_users(), select_user_for_chat(), start_private_chat_mode(), back_to_global_chat(), send_private_message_in_main_area() etc.
+Message send pipeline: send_chat_message() → insert_message() (global) or insert_private_message() (private) with tag processing via process_tags().
+
+
+
+6. User-Management Page [index 5, create_user_management_panel()]
+create_user_management_panel() – Table + “Add / Edit / Delete / Reset Pw” buttons.
+load_user_data() – SELECT with LEFT JOIN on branches, fills table.
+add_user(), edit_user(), delete_user(), reset_password() – open dialogs, update DB, refresh table.
+Visibility helpers: show_user_management_admin_features() / hide_user_management_admin_features().
+
+
+
+7. System-Settings Page [index 6, create_system_settings_panel()] (super-admin only)
+create_system_settings_panel() – General app config form (branding, email, …).
+save_system_settings() / reset_system_settings() – commit / roll back settings rows in system_settings.
+
+
+
+8. Database-Maintenance Page [index 7, create_db_maintenance_panel()] (super-admin only)
+create_db_maintenance_panel() – Renders buttons: Optimize, Backup, Cleanup, Verify, Refresh Stats.
+optimize_database(), create_backup(), cleanup_database() (wrapper around cleanup_operation() / db_operation()), verify_database_integrity(), refresh_database_stats().
+
+
+
+9. Export-Reports Page [index 8, create_export_reports_panel()] (super-admin only)
+create_export_reports_panel() – UI for choosing report type and schedule.
+export_report(report_type) – immediate export (PDF/CSV) using helpers inside ExportReportsDialog.
+schedule_export() – sets up future cron-like jobs (simple DB record).
+
+
+
+Navigation / Framework glue
+create_left_panel() – Builds the vertical menu; each button’s clicked connects to switch_content(content_type).
+switch_content() – Sets self.content_stack.setCurrentIndex(…) and calls the corresponding load_* method to refresh data.
+create_right_panel() – Assembles the content stack; initially calls all create_*_panel() methods so widgets exist before switching.
