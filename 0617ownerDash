@@ -1,0 +1,4126 @@
+import sys
+import sqlite3
+import time
+import re
+import os
+from datetime import datetime
+from PyQt5.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QLabel, QLineEdit, QPushButton, QComboBox, QMessageBox, QFrame,
+    QFormLayout, QSizePolicy, QSpacerItem, QScrollArea, QTableWidget,
+    QTableWidgetItem, QHeaderView, QStackedWidget, QTextEdit, QDialog,
+    QDialogButtonBox, QSpinBox, QDateEdit, QTreeWidget, QTreeWidgetItem,
+    QInputDialog, QGridLayout, QListWidget, QListWidgetItem, QGroupBox,
+    QFileDialog
+)
+from PyQt5.QtCore import Qt, QPropertyAnimation, QEasingCurve, pyqtProperty, QDate, QTimer
+from PyQt5.QtGui import QFont, QPalette, QColor, QPainter, QPixmap, QIcon
+
+# Import ChatWindow for the chat interface
+try:
+    from chatInterface import ChatWindow
+except ImportError:
+    print("⚠️  Warning: chatInterface.py not found. Chat functionality will be limited.")
+    ChatWindow = None
+
+# Import AddProductWindow from the standalone addProducts module
+from addProducts import AddProductWindow
+
+# Database functions for chat
+def get_all_messages(cursor, include_deleted=False):
+    """Get all chat messages excluding activity messages"""
+    cursor.execute("""
+        SELECT username, role, message, timestamp, message_id
+        FROM message 
+        WHERE message NOT LIKE '[ACTIVITY]%'
+        ORDER BY timestamp ASC
+        LIMIT 50
+    """)
+    return cursor.fetchall()
+
+def insert_message(cursor, user_id, username, role, role_id, message_text):
+    """Insert a new chat message"""
+    cursor.execute("""
+        INSERT INTO message (user_id, username, role, role_id, message)
+        VALUES (?, ?, ?, ?, ?)
+    """, (user_id, username, role, role_id, message_text))
+
+def get_all_users_for_chat(cursor, current_username):
+    """Get all users for chat excluding current user"""
+    cursor.execute("""
+        SELECT u.username, r.role_name, u.fullname
+        FROM users u
+        JOIN roles r ON u.role = r.role_id
+        WHERE u.username != ?
+        ORDER BY r.role_name, u.username
+    """, (current_username,))
+    return cursor.fetchall()
+
+def get_private_messages(cursor, sender_username, receiver_username):
+    """Get private messages between two users"""
+    cursor.execute("""
+        SELECT sender_username, receiver_username, message_text, timestamp, sender_role
+        FROM private_messages 
+        WHERE (sender_username = ? AND receiver_username = ?) 
+           OR (sender_username = ? AND receiver_username = ?)
+        ORDER BY timestamp ASC
+        LIMIT 20
+    """, (sender_username, receiver_username, receiver_username, sender_username))
+    return cursor.fetchall()
+
+def insert_private_message(cursor, sender_user_id, sender_username, receiver_username, sender_role, message_text):
+    """Insert a private message"""
+    cursor.execute("""
+        INSERT INTO private_messages 
+        (sender_user_id, sender_username, receiver_username, sender_role, message_text)
+        VALUES (?, ?, ?, ?, ?)
+    """, (sender_user_id, sender_username, receiver_username, sender_role, message_text))
+
+def format_malaysia_time(timestamp_str=None):
+    """Format timestamp to Malaysia timezone"""
+    try:
+        if timestamp_str:
+            # Parse the timestamp
+            if isinstance(timestamp_str, str):
+                dt = datetime.strptime(timestamp_str, '%Y-%m-%d %H:%M:%S')
+            else:
+                dt = timestamp_str
+        else:
+            dt = datetime.now()
+        
+        # Format as Malaysia time
+        return dt.strftime('%Y-%m-%d %H:%M:%S')
+    except:
+        return datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+def create_chat_tables(cursor):
+    """Create necessary chat tables"""
+    # Message table
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS message (
+            message_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            role_id INTEGER,
+            username TEXT,
+            role TEXT,
+            message TEXT,
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    
+    # Private messages table
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS private_messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            sender_user_id INTEGER,
+            sender_username TEXT,
+            receiver_username TEXT,
+            sender_role TEXT,
+            message_text TEXT,
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+class ResetPasswordDialog(QDialog):
+    """Beautiful reset password dialog matching dashboard theme"""
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("🔒 Reset Password")
+        self.setFixedSize(600, 450)  # Set to exactly 600x450 as requested
+        self.setModal(True)
+        
+        # Get parent colors if available
+        if parent and hasattr(parent, 'colors'):
+            self.colors = parent.colors
+        else:
+            self.colors = {
+                'primary': '#1565C0',
+                'accent': '#2196F3',
+                'error': '#F44336',
+                'success': '#4CAF50'
+            }
+        
+        self.setupUI()
+        self.current_password = ""
+        self.new_password = ""
+    
+    def setupUI(self):
+        layout = QVBoxLayout()
+        layout.setContentsMargins(25, 20, 25, 20)  # Reduced margins to prevent overlap
+        layout.setSpacing(15)  # Reduced spacing to fit everything properly
+        
+        # Header
+        header_layout = QHBoxLayout()
+        
+        icon_label = QLabel("🔒")
+        icon_label.setStyleSheet("font-size: 32px; margin-right: 10px;")
+        
+        title_label = QLabel("Reset Password")
+        title_label.setStyleSheet(f"""
+            font-size: 22px;
+            font-weight: bold;
+            color: {self.colors['primary']};
+            margin-bottom: 3px;
+        """)
+        
+        subtitle_label = QLabel("Please enter your current password and choose a new one")
+        subtitle_label.setStyleSheet("font-size: 14px; color: #666; margin-bottom: 10px;")
+        
+        header_layout.addWidget(icon_label)
+        header_layout.addWidget(title_label)
+        header_layout.addStretch()
+        
+        layout.addLayout(header_layout)
+        layout.addWidget(subtitle_label)
+        
+        # Form container
+        form_container = QFrame()
+        form_container.setStyleSheet(f"""
+            QFrame {{
+                background-color: #f8f9fa;
+                border: 1px solid #e9ecef;
+                border-radius: 10px;
+                padding: 15px;
+            }}
+        """)
+        
+        form_layout = QFormLayout()
+        form_layout.setSpacing(12)  # Optimized spacing to prevent overlap
+        
+        # Current password
+        self.current_password_input = QLineEdit()
+        self.current_password_input.setEchoMode(QLineEdit.Password)
+        self.current_password_input.setPlaceholderText("Enter your current password")
+        
+        # New password
+        self.new_password_input = QLineEdit()
+        self.new_password_input.setEchoMode(QLineEdit.Password)
+        self.new_password_input.setPlaceholderText("Enter new password (4+ digits)")
+        
+        # Confirm password
+        self.confirm_password_input = QLineEdit()
+        self.confirm_password_input.setEchoMode(QLineEdit.Password)
+        self.confirm_password_input.setPlaceholderText("Confirm new password")
+        
+        # Style inputs with proper sizing
+        input_style = f"""
+            QLineEdit {{
+                border: 2px solid #e9ecef;
+                border-radius: 8px;
+                padding: 12px 15px;
+                font-size: 14px;
+                background-color: white;
+                min-height: 18px;
+                font-family: 'Segoe UI', Arial, sans-serif;
+            }}
+            QLineEdit:focus {{
+                border-color: {self.colors['accent']};
+                background-color: #fafafa;
+            }}
+        """
+        
+        self.current_password_input.setStyleSheet(input_style)
+        self.new_password_input.setStyleSheet(input_style)
+        self.confirm_password_input.setStyleSheet(input_style)
+        
+        form_layout.addRow("Current Password:", self.current_password_input)
+        form_layout.addRow("New Password:", self.new_password_input)
+        form_layout.addRow("Confirm Password:", self.confirm_password_input)
+        
+        # Info label
+        info_label = QLabel("ℹ️ Password must be numeric and at least 4 digits long")
+        info_label.setStyleSheet("color: #666; font-size: 14px; font-style: italic; margin-top: 8px; padding: 5px;")
+        form_layout.addRow("", info_label)
+        
+        form_container.setLayout(form_layout)
+        layout.addWidget(form_container)
+        
+        # Buttons
+        button_layout = QHBoxLayout()
+        button_layout.setSpacing(15)  # Proper spacing between buttons
+        
+        cancel_btn = QPushButton("❌ Cancel")
+        reset_btn = QPushButton("🔒 Reset Password")
+        
+        # Button styling with proper size
+        button_style_template = """
+            QPushButton {{
+                border: none;
+                border-radius: 8px;
+                padding: 12px 25px;
+                font-size: 14px;
+                font-weight: bold;
+                min-width: 130px;
+                font-family: 'Segoe UI', Arial, sans-serif;
+            }}
+            QPushButton:hover {{
+                transform: translateY(-1px);
+            }}
+        """
+        
+        cancel_btn.setStyleSheet(button_style_template + f"""
+            QPushButton {{
+                background-color: {self.colors.get('text_secondary', '#757575')};
+                color: white;
+            }}
+            QPushButton:hover {{
+                background-color: #5a6268;
+            }}
+        """)
+        
+        reset_btn.setStyleSheet(button_style_template + f"""
+            QPushButton {{
+                background-color: {self.colors['primary']};
+                color: white;
+            }}
+            QPushButton:hover {{
+                background-color: {self.colors['accent']};
+            }}
+        """)
+        
+        cancel_btn.clicked.connect(self.reject)
+        reset_btn.clicked.connect(self.validateAndAccept)
+        
+        button_layout.addWidget(cancel_btn)
+        button_layout.addStretch()
+        button_layout.addWidget(reset_btn)
+        
+        layout.addLayout(button_layout)
+        
+        # Overall dialog styling
+        self.setStyleSheet(f"""
+            QDialog {{
+                background-color: white;
+                border: 2px solid {self.colors['primary']};
+                border-radius: 15px;
+                font-family: 'Segoe UI', Arial, sans-serif;
+            }}
+            QFormLayout QLabel {{
+                font-weight: bold;
+                color: #333;
+                margin-bottom: 5px;
+                font-size: 14px;
+                padding: 3px 0px;
+            }}
+        """)
+        
+        self.setLayout(layout)
+    
+    def validateAndAccept(self):
+        """Validate inputs and accept dialog"""
+        current = self.current_password_input.text().strip()
+        new = self.new_password_input.text().strip()
+        confirm = self.confirm_password_input.text().strip()
+        
+        if not current:
+            self.showError("Please enter your current password")
+            self.current_password_input.setFocus()
+            return
+        
+        if not new:
+            self.showError("Please enter a new password")
+            self.new_password_input.setFocus()
+            return
+        
+        # Validate new password
+        try:
+            int(new)
+            if len(new) < 4:
+                self.showError("Password must be at least 4 digits long")
+                self.new_password_input.setFocus()
+                return
+        except ValueError:
+            self.showError("Password must contain only numbers")
+            self.new_password_input.setFocus()
+            return
+        
+        if new != confirm:
+            self.showError("Passwords do not match")
+            self.confirm_password_input.setFocus()
+            return
+        
+        self.current_password = current
+        self.new_password = new
+        self.accept()
+    
+    def showError(self, message):
+        """Show error message with styling"""
+        msg = QMessageBox(self)
+        msg.setIcon(QMessageBox.Warning)
+        msg.setWindowTitle("❌ Validation Error")
+        msg.setText(message)
+        msg.setStyleSheet(f"""
+            QMessageBox {{
+                background-color: white;
+                border: 2px solid {self.colors['error']};
+                border-radius: 10px;
+                font-family: 'Segoe UI', Arial, sans-serif;
+                font-size: 14px;
+                min-width: 350px;
+            }}
+            QMessageBox QLabel {{
+                font-size: 14px;
+                padding: 15px;
+                color: #333;
+            }}
+            QMessageBox QPushButton {{
+                background-color: {self.colors['error']};
+                color: white;
+                border: none;
+                border-radius: 6px;
+                padding: 12px 25px;
+                font-weight: bold;
+                font-size: 14px;
+                min-width: 80px;
+            }}
+        """)
+        msg.exec_()
+    
+    def getPasswords(self):
+        """Return the validated passwords"""
+        return self.current_password, self.new_password
+
+class OwnerDashboard(QMainWindow):
+    def __init__(self, user_info):
+        super().__init__()
+        self.user_info = user_info
+        self.login_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
+        # Chat variables
+        self.is_private_chat_mode = False
+        self.active_pm_user = None
+        self.active_pm_role = None
+        self.selected_chat_user = None
+        self.selected_chat_role = None
+        self.selected_chat_fullname = None
+        self.all_users = []
+        
+        # Define role colors for chat
+        self.role_colors = {
+            'superadmin': '#FF9800',  # Orange - Highest authority
+            'admin': '#4CAF50',       # Green - Administrative
+            'owner': '#2196F3',       # Blue - Business owner
+            'tester': '#E91E63'       # Pink - Testing/Quality
+        }
+        
+        self.setWindowTitle(f"Owner Dashboard - {user_info.get('fullname', user_info.get('username', 'Owner'))}")
+        self.setGeometry(100, 100, 1400, 800)
+        
+        # Start in maximized (full window) mode
+        self.showMaximized()
+        
+        # Set blue theme colors
+        self.colors = {
+            'primary': '#1565C0',      # Deep blue
+            'secondary': '#1976D2',    # Medium blue
+            'accent': '#2196F3',       # Light blue
+            'light': '#E3F2FD',        # Very light blue
+            'sidebar': '#0D47A1',      # Dark blue for sidebar
+            'text_primary': '#212121', # Dark gray
+            'text_secondary': '#757575', # Medium gray
+            'white': '#FFFFFF',
+            'success': '#4CAF50',
+            'warning': '#FF9800',
+            'error': '#F44336'
+        }
+        
+        self.initDatabase()
+        self.setupUI()
+        self.applyStyles()
+        
+        # Initialize chat refresh timer
+        self.chat_refresh_timer = QTimer()
+        self.chat_refresh_timer.timeout.connect(self.refreshChat)
+        self.chat_refresh_timer.start(3000)  # Refresh chat every 3 seconds
+        
+    def initDatabase(self):
+        """Initialize database with required tables"""
+        try:
+            conn = sqlite3.connect("testing_system.db")
+            cursor = conn.cursor()
+            create_chat_tables(cursor)
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            print(f"Database initialization error: {e}")
+        
+    def setupUI(self):
+        # Central widget
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+        
+        # Main layout
+        main_layout = QHBoxLayout()
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+        central_widget.setLayout(main_layout)
+        
+        # Create sidebar
+        self.sidebar = self.createSidebar()
+        main_layout.addWidget(self.sidebar)
+        
+        # Create content area
+        self.content_stack = QStackedWidget()
+        self.content_stack.setObjectName("contentStack")
+        
+        # Create pages
+        self.my_product_page = self.createMyProductPage()
+        self.my_application_page = self.createMyApplicationPage()
+        self.chat_page = self.createChatPage()
+        self.my_profile_page = self.createMyProfilePage()
+        self.add_product_page = self.createAddProductPage()
+        
+        # Add pages to stack
+        self.content_stack.addWidget(self.my_product_page)
+        self.content_stack.addWidget(self.my_application_page)
+        self.content_stack.addWidget(self.chat_page)
+        self.content_stack.addWidget(self.my_profile_page)
+        self.content_stack.addWidget(self.add_product_page)
+        
+        main_layout.addWidget(self.content_stack, 1)
+        
+        # Set default page to My Product and initialize
+        self.content_stack.setCurrentWidget(self.my_product_page)
+        
+        # Set My Product button as active by default
+        if self.menu_buttons:
+            self.menu_buttons[0].setObjectName("menuButtonActive")
+            self.menu_buttons[0].setStyleSheet("")  # Refresh style
+        
+        # Load initial product data
+        self.loadProductData()
+        
+    def createSidebar(self):
+        sidebar = QFrame()
+        sidebar.setObjectName("sidebar")
+        sidebar.setFixedWidth(280)
+        
+        layout = QVBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        
+        # Header section
+        header_widget = QWidget()
+        header_widget.setObjectName("sidebarHeader")
+        header_layout = QVBoxLayout()
+        header_layout.setContentsMargins(20, 30, 20, 20)
+        
+        # Welcome message
+        welcome_label = QLabel("Welcome Back to")
+        welcome_label.setObjectName("welcomeText")
+        welcome_label.setAlignment(Qt.AlignCenter)
+        
+        system_label = QLabel("Shelf Life Management System")
+        system_label.setObjectName("systemText")
+        system_label.setAlignment(Qt.AlignCenter)
+        system_label.setWordWrap(True)
+        
+        # Username
+        username = self.user_info.get('fullname', self.user_info.get('username', 'Owner'))
+        user_label = QLabel(f"{username}")
+        user_label.setObjectName("usernameText")
+        user_label.setAlignment(Qt.AlignCenter)
+        
+        header_layout.addWidget(welcome_label)
+        header_layout.addWidget(system_label)
+        header_layout.addWidget(user_label)
+        header_widget.setLayout(header_layout)
+        
+        layout.addWidget(header_widget)
+        
+        # Menu items
+        menu_widget = QWidget()
+        menu_layout = QVBoxLayout()
+        menu_layout.setContentsMargins(10, 20, 10, 20)
+        menu_layout.setSpacing(5)
+        
+        # Menu buttons
+        self.menu_buttons = []
+        
+        # My Product button
+        product_btn = self.createMenuButton("📦 My Product", 0)
+        self.menu_buttons.append(product_btn)
+        menu_layout.addWidget(product_btn)
+        
+        # My Application button
+        application_btn = self.createMenuButton("📋 My Application", 1)
+        self.menu_buttons.append(application_btn)
+        menu_layout.addWidget(application_btn)
+        
+        # Chat/Announcement button
+        chat_btn = self.createMenuButton("💬 Chat / Announcement", 2)
+        self.menu_buttons.append(chat_btn)
+        menu_layout.addWidget(chat_btn)
+        
+        # My Profile button
+        profile_btn = self.createMenuButton("👤 My Profile", 3)
+        self.menu_buttons.append(profile_btn)
+        menu_layout.addWidget(profile_btn)
+        
+        menu_widget.setLayout(menu_layout)
+        layout.addWidget(menu_widget)
+        
+        # Spacer
+        layout.addStretch()
+        
+        # Bottom section
+        bottom_widget = QWidget()
+        bottom_widget.setObjectName("sidebarBottom")
+        bottom_layout = QVBoxLayout()
+        bottom_layout.setContentsMargins(20, 20, 20, 20)
+        
+        # User info
+        user_info_label = QLabel(f"User: {self.user_info.get('username', 'owner')}")
+        user_info_label.setObjectName("userInfoText")
+        
+        login_time_label = QLabel(f"Login: {self.login_time}")
+        login_time_label.setObjectName("loginTimeText")
+        
+        # Logout button
+        logout_btn = QPushButton("🚪 Logout")
+        logout_btn.setObjectName("logoutButton")
+        logout_btn.clicked.connect(self.logout)
+        
+        bottom_layout.addWidget(user_info_label)
+        bottom_layout.addWidget(login_time_label)
+        bottom_layout.addSpacing(10)
+        bottom_layout.addWidget(logout_btn)
+        bottom_widget.setLayout(bottom_layout)
+        
+        layout.addWidget(bottom_widget)
+        
+        sidebar.setLayout(layout)
+        return sidebar
+        
+    def createMenuButton(self, text, page_index):
+        btn = QPushButton(text)
+        btn.setObjectName("menuButton")
+        btn.setFixedHeight(50)
+        btn.clicked.connect(lambda: self.switchPage(page_index))
+        return btn
+        
+    def switchPage(self, page_index):
+        # Update button states
+        for i, btn in enumerate(self.menu_buttons):
+            if i == page_index:
+                btn.setObjectName("menuButtonActive")
+            else:
+                btn.setObjectName("menuButton")
+            btn.setStyleSheet("")  # Refresh style
+        
+        # Switch page
+        self.content_stack.setCurrentIndex(page_index)
+        
+        # Refresh data for specific pages
+        if page_index == 0:  # My Product
+            self.loadProductData()
+        elif page_index == 3:  # My Profile
+            self.loadProfileData()
+    
+    def createMyProductPage(self):
+        page = QWidget()
+        page.setObjectName("contentPage")
+        
+        layout = QVBoxLayout()
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(20)
+        
+        # Header with title and add button
+        header_layout = QHBoxLayout()
+        
+        title = QLabel("📦 My Products")
+        title.setObjectName("pageTitle")
+        
+        add_product_btn = QPushButton("Add Product")
+        add_product_btn.setObjectName("addProductButton")
+        add_product_btn.clicked.connect(self.addProduct)
+        
+        header_layout.addWidget(title)
+        header_layout.addStretch()
+        header_layout.addWidget(add_product_btn)
+        
+        layout.addLayout(header_layout)
+        
+        # Search Panel
+        search_frame = QFrame()
+        search_frame.setObjectName("searchFrame")
+        search_layout = QHBoxLayout()
+        search_layout.setContentsMargins(15, 10, 15, 10)
+        
+        search_label = QLabel("Search Panel (Search by Product Name)")
+        search_label.setObjectName("searchLabel")
+        
+        self.search_input = QLineEdit()
+        self.search_input.setObjectName("searchInput")
+        self.search_input.setPlaceholderText("Enter product name to search...")
+        self.search_input.textChanged.connect(self.filterProducts)
+        self.search_input.returnPressed.connect(self.performSearch)
+        
+        search_btn = QPushButton("🔍 Search")
+        search_btn.setObjectName("searchButton")
+        search_btn.clicked.connect(self.performSearch)
+        
+        search_layout.addWidget(search_label)
+        search_layout.addWidget(self.search_input)
+        search_layout.addWidget(search_btn)
+        search_frame.setLayout(search_layout)
+        
+        layout.addWidget(search_frame)
+        
+        # Products container with scroll area
+        scroll_area = QScrollArea()
+        scroll_area.setObjectName("productsScrollArea")
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        
+        # Container widget for product cards
+        self.products_container = QWidget()
+        self.products_container.setObjectName("productsContainer")
+        
+        # Grid layout for product cards
+        self.products_grid_layout = QGridLayout()
+        self.products_grid_layout.setHorizontalSpacing(15)  # Y-axis spacing between cards
+        self.products_grid_layout.setVerticalSpacing(20)    # Vertical spacing
+        self.products_grid_layout.setContentsMargins(20, 20, 20, 20)
+        
+        self.products_container.setLayout(self.products_grid_layout)
+        scroll_area.setWidget(self.products_container)
+        
+        layout.addWidget(scroll_area)
+        
+        # Removed status label as requested
+        
+        page.setLayout(layout)
+        return page
+    
+    def createProductCard(self, product_data):
+        """Create a simplified product card widget with specified layout"""
+        product_id, product_name, product_image, rack_location, sku, manufacture_date, expired_date, barcode = product_data
+        
+        # Main card frame with specified size
+        card = QFrame()
+        card.setObjectName("productCard")
+        card.setFixedSize(250, 400)  # Exact size as requested
+        
+        # Card layout
+        card_layout = QVBoxLayout()
+        card_layout.setContentsMargins(10, 10, 10, 10)
+        card_layout.setSpacing(0)
+        
+        # === IMAGE SECTION (55% of card height = 220px) ===
+        image_container = QFrame()
+        image_container.setObjectName("productImageContainer")
+        image_container.setFixedHeight(180)
+        
+        image_layout = QVBoxLayout()
+        image_layout.setContentsMargins(8, 8, 8, 8)
+        image_layout.setAlignment(Qt.AlignCenter)
+        
+        # Product image or placeholder
+        image_label = QLabel()
+        image_label.setAlignment(Qt.AlignCenter)
+        image_label.setObjectName("productImage")
+        image_label.setMaximumSize(200, 200)  # Ensure image doesn't overflow
+        
+        if product_image and product_image.strip():
+            try:
+                pixmap = QPixmap(product_image)
+                if not pixmap.isNull():
+                    # Scale to fit within the container with better proportions
+                    scaled_pixmap = pixmap.scaled(200, 200, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                    image_label.setPixmap(scaled_pixmap)
+                else:
+                    raise Exception("Invalid image")
+            except:
+                # Use default product placeholder
+                image_label.setText("📦")
+                image_label.setStyleSheet("font-size: 64px; color: #4CAF50; background: transparent;")
+        else:
+            # Default product placeholder
+            image_label.setText("📦")
+            image_label.setStyleSheet("font-size: 64px; color: #4CAF50; background: transparent;")
+        
+        image_layout.addWidget(image_label)
+        image_container.setLayout(image_layout)
+        card_layout.addWidget(image_container)
+        
+        # === INFO SECTION (45% of card height = 180px) ===
+        info_container = QFrame()
+        info_container.setObjectName("productInfoContainer")
+        info_container.setFixedHeight(160)
+        
+        info_layout = QVBoxLayout()
+        info_layout.setContentsMargins(10, 10, 10, 10)
+        info_layout.setSpacing(6)
+        info_layout.setAlignment(Qt.AlignTop)
+        
+        # Product Name (15px, bold, black)
+        name_label = QLabel(product_name or 'Unknown Product')
+        name_label.setObjectName("productName")
+        name_label.setWordWrap(True)
+        name_label.setAlignment(Qt.AlignLeft)
+        name_label.setStyleSheet("font-size: 15px; font-weight: bold; color: black; line-height: 1.2;")
+        info_layout.addWidget(name_label)
+        
+        # Product ID with label (12px, black)
+        id_label = QLabel(f"ID: {product_id}")
+        id_label.setObjectName("productId")
+        id_label.setAlignment(Qt.AlignLeft)
+        id_label.setStyleSheet("font-size: 12px; font-weight: normal; color: black; margin-top: 2px;")
+        info_layout.addWidget(id_label)
+        
+        # Get batch number from the product data
+        # We need to get batch from database since it's not in the current product_data
+        try:
+            conn = sqlite3.connect("testing_system.db")
+            cursor = conn.cursor()
+            cursor.execute("SELECT batch FROM products WHERE product_id = ?", (product_id,))
+            batch_result = cursor.fetchone()
+            batch_number = batch_result[0] if batch_result else 'N/A'
+            conn.close()
+        except:
+            batch_number = 'N/A'
+        
+        # Batch Number (12px, grey)
+        batch_label = QLabel(f"Batch: {batch_number}")
+        batch_label.setObjectName("productBatch")
+        batch_label.setAlignment(Qt.AlignLeft)
+        batch_label.setStyleSheet("font-size: 12px; color: grey; margin-top: 2px;")
+        info_layout.addWidget(batch_label)
+        
+        # Add some spacing before buttons
+        info_layout.addSpacing(10)
+        
+        # Buttons section
+        buttons_container = QFrame()
+        buttons_container.setObjectName("productButtonsContainer")
+        buttons_layout = QHBoxLayout()
+        buttons_layout.setAlignment(Qt.AlignLeft)
+        buttons_layout.setContentsMargins(0, 0, 0, 0)
+        buttons_layout.setSpacing(6)
+        
+        # More button
+        more_btn = QPushButton("More")
+        more_btn.setObjectName("moreButton")
+        more_btn.clicked.connect(lambda: self.viewProductDetails(product_id))
+        more_btn.setFixedHeight(28)
+        more_btn.setFixedWidth(7)
+        
+        # Edit button
+        edit_btn = QPushButton("Edit")
+        edit_btn.setObjectName("editButton")
+        edit_btn.clicked.connect(lambda: self.editProduct(product_id))
+        edit_btn.setFixedHeight(28)
+        edit_btn.setFixedWidth(7)
+        
+        buttons_layout.addWidget(more_btn)
+        buttons_layout.addWidget(edit_btn)
+        
+        buttons_container.setLayout(buttons_layout)
+        info_layout.addWidget(buttons_container)
+        
+        # Add stretch to push remaining content to top
+        info_layout.addStretch()
+        
+        info_container.setLayout(info_layout)
+        card_layout.addWidget(info_container)
+        
+        card.setLayout(card_layout)
+        return card
+    
+    def createMyApplicationPage(self):
+        page = QWidget()
+        page.setObjectName("contentPage")
+        
+        layout = QVBoxLayout()
+        layout.setContentsMargins(30, 30, 30, 30)
+        
+        # Header
+        title = QLabel("📋 My Application")
+        title.setObjectName("pageTitle")
+        layout.addWidget(title)
+        
+        # Placeholder content - all functions cleared
+        placeholder = QFrame()
+        placeholder.setObjectName("placeholderFrame")
+        placeholder_layout = QVBoxLayout()
+        
+        icon_label = QLabel("📋")
+        icon_label.setAlignment(Qt.AlignCenter)
+        icon_label.setStyleSheet("font-size: 64px; color: #90CAF9; margin: 50px;")
+        
+        message_label = QLabel("My Application Section")
+        message_label.setAlignment(Qt.AlignCenter)
+        message_label.setObjectName("placeholderText")
+        
+        sub_message = QLabel("All functions in this section have been cleared as requested")
+        sub_message.setAlignment(Qt.AlignCenter)
+        sub_message.setObjectName("placeholderSubText")
+        
+        placeholder_layout.addWidget(icon_label)
+        placeholder_layout.addWidget(message_label)
+        placeholder_layout.addWidget(sub_message)
+        placeholder.setLayout(placeholder_layout)
+        
+        layout.addWidget(placeholder)
+        layout.addStretch()
+        
+        page.setLayout(layout)
+        return page
+    
+    def createChatPage(self):
+        """Create the enhanced chat/announcement panel with private messaging"""
+        page = QWidget()
+        page.setObjectName("contentPage")
+        
+        # Get current user role and colors
+        role_name = self.user_info.get('role_name', 'owner').lower()
+        role_color = self.role_colors.get(role_name, '#2196F3')
+        
+        # Apply role-based styling to the chat panel
+        page.setStyleSheet(f"""
+            QWidget {{
+                background: qlineargradient(x1: 0, y1: 0, x2: 1, y2: 1,
+                    stop: 0 #f8f9fa, stop: 1 #e9ecef);
+                color: #212529;
+                font-family: 'Segoe UI', 'San Francisco', Arial, sans-serif;
+            }}
+            QTextEdit {{
+                border: 1px solid #dee2e6;
+                border-radius: 12px;
+                background-color: rgba(255, 255, 255, 0.95);
+                font-family: 'Segoe UI', 'San Francisco', Arial, sans-serif;
+                font-size: 14px;
+                padding: 16px;
+                selection-background-color: {role_color}30;
+                box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+            }}
+            QLineEdit {{
+                border: 1px solid #ced4da;
+                border-radius: 8px;
+                padding: 12px 16px;
+                font-size: 14px;
+                background-color: rgba(255, 255, 255, 0.9);
+                font-family: 'Segoe UI', 'San Francisco', Arial, sans-serif;
+            }}
+            QLineEdit:focus {{
+                border: 2px solid {role_color};
+                background-color: white;
+                box-shadow: 0 0 0 3px {role_color}20;
+                outline: none;
+            }}
+            QPushButton {{
+                background: qlineargradient(x1: 0, y1: 0, x2: 0, y2: 1,
+                    stop: 0 {role_color}, stop: 1 {role_color});
+                color: white;
+                border: none;
+                border-radius: 6px;
+                padding: 12px 24px;
+                font-weight: 600;
+                font-size: 14px;
+                box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+            }}
+            QPushButton:hover {{
+                background: qlineargradient(x1: 0, y1: 0, x2: 0, y2: 1,
+                    stop: 0 {role_color}, stop: 1 {role_color});
+                transform: translateY(-1px);
+                box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+            }}
+            QListWidget {{
+                border: 1px solid #dee2e6;
+                border-radius: 8px;
+                background-color: rgba(255, 255, 255, 0.95);
+                font-family: 'Segoe UI', 'San Francisco', Arial, sans-serif;
+                font-size: 13px;
+                alternate-background-color: #f8f9fa;
+            }}
+            QListWidget::item {{
+                padding: 10px;
+                border-bottom: 1px solid #f1f3f4;
+                border-radius: 4px;
+                margin: 2px;
+            }}
+            QListWidget::item:selected {{
+                background-color: #FFFFE0;  /* Light yellow background */
+                color: #1976D2;             /* Blue font color */
+                border: 2px solid #FFD700;  /* Gold border for better visibility */
+                font-weight: bold;
+            }}
+            QListWidget::item:hover {{
+                background-color: #FFF8DC;  /* Light cream on hover */
+                border: 1px solid {role_color}30;
+            }}
+        """)
+        
+        # Main layout
+        main_layout = QVBoxLayout()
+        main_layout.setContentsMargins(10, 10, 10, 10)
+        
+        # Header with user info
+        header_layout = QHBoxLayout()
+        full_name = self.user_info.get('fullname', self.user_info.get('username', 'Unknown'))
+        user_label = QLabel(f"💬 Chat/Announcement - {role_name.title()} - {full_name}")
+        user_label.setFont(QFont("Arial", 14, QFont.Bold))
+        user_label.setStyleSheet(f"color: {role_color}; padding: 10px; background: rgba(255,255,255,0.8); border-radius: 8px;")
+        
+        header_layout.addWidget(user_label)
+        header_layout.addStretch()
+        
+        main_layout.addLayout(header_layout)
+        
+        # Main content with horizontal split
+        content_layout = QHBoxLayout()
+        
+        # Left side - Chat area (2/3 of space)
+        left_widget = QWidget()
+        left_layout = QVBoxLayout()
+        left_widget.setLayout(left_layout)
+        
+        # Chat display area - will switch between global and private chat
+        self.chat_group = QGroupBox("Global Chat Room")
+        chat_layout = QVBoxLayout()
+        
+        # Back to Global Chat button (initially hidden)
+        self.back_to_global_btn = QPushButton("← Back to Global Chat Room")
+        self.back_to_global_btn.clicked.connect(self.backToGlobalChat)
+        self.back_to_global_btn.setVisible(False)
+        self.back_to_global_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: #6c757d;
+                color: white;
+                border: none;
+                border-radius: 6px;
+                padding: 8px 16px;
+                font-weight: 600;
+                margin-bottom: 10px;
+            }}
+            QPushButton:hover {{
+                background-color: #5a6268;
+            }}
+        """)
+        chat_layout.addWidget(self.back_to_global_btn)
+        
+        self.chat_display = QTextEdit()
+        self.chat_display.setReadOnly(True)
+        self.chat_display.setMinimumHeight(350)
+        chat_layout.addWidget(self.chat_display)
+        
+        self.chat_group.setLayout(chat_layout)
+        left_layout.addWidget(self.chat_group)
+        
+        # Message input area (only for admin and superadmin in global chat)
+        if role_name in ['admin', 'superadmin']:
+            self.input_group = QGroupBox("Send Public Message")
+            input_layout = QVBoxLayout()
+            
+            # Tag helper (will be hidden in private chat mode)
+            self.tag_info = QLabel("💡 Tip: Use @username to tag users (e.g., @john)")
+            self.tag_info.setStyleSheet("color: #666; font-size: 14px; font-style: italic; margin: 5px;")
+            input_layout.addWidget(self.tag_info)
+            
+            msg_layout = QHBoxLayout()
+            self.message_input = QLineEdit()
+            self.message_input.setPlaceholderText("Type your message here... (use @username to tag)")
+            self.message_input.returnPressed.connect(self.sendMessageHandler)
+            
+            self.send_btn = QPushButton("Send")
+            self.send_btn.clicked.connect(self.sendMessageHandler)
+            
+            msg_layout.addWidget(self.message_input)
+            msg_layout.addWidget(self.send_btn)
+            input_layout.addLayout(msg_layout)
+            
+            self.input_group.setLayout(input_layout)
+            left_layout.addWidget(self.input_group)
+        else:
+            # Show read-only message for owner and tester in global chat
+            self.readonly_label = QLabel("You can view messages but cannot send messages in the public chat room.")
+            self.readonly_label.setStyleSheet("color: #666; font-style: italic; padding: 10px; background: rgba(255,255,255,0.8); border-radius: 8px;")
+            self.readonly_label.setAlignment(Qt.AlignCenter)
+            left_layout.addWidget(self.readonly_label)
+            
+            # Create input group but hide it initially for non-admin users
+            self.input_group = QGroupBox("Send Private Message")
+            input_layout = QVBoxLayout()
+            
+            # Tag helper (will be hidden in private chat mode)
+            self.tag_info = QLabel("💡 Tip: Use @username to tag users (e.g., @john)")
+            self.tag_info.setStyleSheet("color: #666; font-size: 14px; font-style: italic; margin: 5px;")
+            input_layout.addWidget(self.tag_info)
+            
+            msg_layout = QHBoxLayout()
+            self.message_input = QLineEdit()
+            self.message_input.setPlaceholderText("Type your message here... (use @username to tag)")
+            self.message_input.returnPressed.connect(self.sendMessageHandler)
+            
+            self.send_btn = QPushButton("Send")
+            self.send_btn.clicked.connect(self.sendMessageHandler)
+            
+            msg_layout.addWidget(self.message_input)
+            msg_layout.addWidget(self.send_btn)
+            input_layout.addLayout(msg_layout)
+            
+            self.input_group.setLayout(input_layout)
+            self.input_group.setVisible(False)  # Hide input area initially for non-admin users
+            left_layout.addWidget(self.input_group)
+        
+        content_layout.addWidget(left_widget, 2)
+        
+        # Right side - Users and Private Chat (1/3 of space)
+        right_widget = QWidget()
+        right_layout = QVBoxLayout()
+        right_widget.setLayout(right_layout)
+        
+        # Users list with search
+        users_group = QGroupBox("All Users")
+        users_layout = QVBoxLayout()
+        
+        # Search bar
+        search_layout = QHBoxLayout()
+        search_label = QLabel("🔍 Search:")
+        search_label.setStyleSheet("font-size: 14px; color: #666;")
+        
+        self.user_search = QLineEdit()
+        self.user_search.setPlaceholderText("🔍 Search users...")
+        self.user_search.textChanged.connect(self.searchUsers)
+        self.user_search.setStyleSheet("""
+            font-size: 14px; 
+            padding: 10px 14px; 
+            border: 1px solid #ced4da;
+            border-radius: 20px;
+            background-color: rgba(255, 255, 255, 0.9);
+            color: #495057;
+        """)
+        
+        search_layout.addWidget(search_label)
+        search_layout.addWidget(self.user_search)
+        users_layout.addLayout(search_layout)
+        
+        # Users list
+        self.users_list = QListWidget()
+        self.users_list.itemClicked.connect(self.selectUserForChat)
+        self.users_list.setMaximumHeight(300)
+        users_layout.addWidget(self.users_list)
+        
+        # Selected user info and start chat button
+        self.selected_user_label = QLabel("Select a user above to start private messaging")
+        self.selected_user_label.setStyleSheet("color: #666; font-size: 12px; font-style: italic; margin: 10px 5px; padding: 10px; background: rgba(255,255,255,0.8); border-radius: 8px;")
+        self.selected_user_label.setAlignment(Qt.AlignCenter)
+        users_layout.addWidget(self.selected_user_label)
+        
+        # Start Chat button (initially hidden)
+        self.start_chat_btn = QPushButton("💬 Start Chat")
+        self.start_chat_btn.clicked.connect(self.startPrivateChatMode)
+        self.start_chat_btn.setVisible(False)
+        self.start_chat_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: qlineargradient(x1: 0, y1: 0, x2: 0, y2: 1,
+                    stop: 0 {role_color}, stop: 1 {role_color});
+                color: white;
+                border: none;
+                border-radius: 8px;
+                padding: 12px 24px;
+                font-weight: 600;
+                font-size: 14px;
+                margin: 10px 5px;
+            }}
+            QPushButton:hover {{
+                background: qlineargradient(x1: 0, y1: 0, x2: 0, y2: 1,
+                    stop: 0 {role_color}, stop: 1 {role_color});
+                transform: translateY(-1px);
+                box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+            }}
+        """)
+        users_layout.addWidget(self.start_chat_btn)
+        
+        users_group.setLayout(users_layout)
+        right_layout.addWidget(users_group)
+        
+        content_layout.addWidget(right_widget, 1)
+        main_layout.addLayout(content_layout)
+        
+        page.setLayout(main_layout)
+        
+        # Load initial data
+        self.loadChatMessages()
+        self.loadAvailableUsers()
+        
+        return page
+    
+    def createAddProductPage(self):
+        """Create the Add Product page with full layout from addProducts.py"""
+        page = QWidget()
+        page.setObjectName("contentPage")
+        
+        # Main layout for the entire page
+        main_layout = QVBoxLayout()
+        main_layout.setContentsMargins(20, 20, 20, 20)
+        main_layout.setSpacing(15)
+        
+        # Header with back button and title
+        header_layout = QHBoxLayout()
+        header_layout.setContentsMargins(0, 0, 0, 10)
+        
+        back_btn = QPushButton("← Back to My Products")
+        back_btn.setObjectName("backButton")
+        back_btn.setFixedSize(200, 40)
+        back_btn.clicked.connect(lambda: self.switchPage(0))
+        
+        title_label = QLabel("📦 Add New Product")
+        title_label.setObjectName("pageTitle")
+        title_label.setAlignment(Qt.AlignCenter)
+        
+        header_layout.addWidget(back_btn, alignment=Qt.AlignLeft)
+        header_layout.addWidget(title_label)
+        header_layout.addStretch()
+        
+        main_layout.addLayout(header_layout)
+        
+        # Create scroll area for the form content
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setStyleSheet("QScrollArea { border: none; background-color: #f3f3fe; }")
+        
+        content_widget = QWidget()
+        content_widget.setStyleSheet("background-color: #f3f3fe;")
+        form_layout = QVBoxLayout(content_widget)
+        form_layout.setContentsMargins(10, 10, 10, 20)
+        form_layout.setSpacing(18)
+        
+        # --- Top section: Image Upload, Name, Description ---
+        top_section_layout = QHBoxLayout()
+        top_section_layout.setSpacing(25)
+        
+        # Image upload section (Left)
+        image_upload_layout = QVBoxLayout()
+        image_upload_layout.setAlignment(Qt.AlignTop)
+        
+        # Create a frame for the image preview that acts as the upload button
+        self.image_preview_frame = QFrame()
+        self.image_preview_frame.setFixedSize(250, 180)
+        self.image_preview_frame.setStyleSheet("border: 2px dashed #4CC9F0; border-radius: 12px; background-color: #f5f5fa;")
+        self.image_preview_frame.setCursor(Qt.PointingHandCursor)
+        self.image_preview_frame.setLayout(QVBoxLayout())
+        self.image_preview_frame.mousePressEvent = self.frame_click
+        
+        # Create a label to display the image
+        self.image_preview = QLabel("Upload Image (Optional)")
+        self.image_preview.setAlignment(Qt.AlignCenter)
+        self.image_preview.setStyleSheet("border: none; background-color: transparent; font-size: 16px; color: #333;")
+        self.image_preview_frame.layout().addWidget(self.image_preview)
+        
+        # Create a horizontal layout for filename and upload another button
+        self.image_info_layout = QHBoxLayout()
+        
+        # Label for the image filename
+        self.image_name_label = QLabel("Image Name")
+        self.image_name_label.setStyleSheet("font-size: 14px; color: #333; margin-top: 8px;")
+        
+        # Secondary button for uploading another image (initially hidden)
+        self.upload_another_btn = QPushButton("Change Image")
+        self.upload_another_btn.setObjectName("upload_another_btn")
+        self.upload_another_btn.setFixedSize(150, 30)
+        self.upload_another_btn.clicked.connect(self.upload_image)
+        self.upload_another_btn.hide()
+        
+        self.image_info_layout.addWidget(self.image_name_label)
+        self.image_info_layout.addWidget(self.upload_another_btn)
+        self.image_info_layout.addStretch()
+        
+        # Add widgets to the layout
+        image_upload_layout.addWidget(self.image_preview_frame)
+        image_upload_layout.addLayout(self.image_info_layout)
+        image_upload_layout.addStretch()
+        
+        top_section_layout.addLayout(image_upload_layout, 1)
+        
+        # Name and Description section (Right)
+        name_desc_layout = QVBoxLayout()
+        self.name_input = QLineEdit()
+        self.name_input.setPlaceholderText("Enter product name (Required)")
+        self.name_input.setObjectName("product_name_input")
+        self.name_input.textChanged.connect(self.update_batch_number)
+        
+        self.desc_input = QTextEdit()
+        self.desc_input.setPlaceholderText("Make the description short and concise.")
+        self.desc_input.setFixedHeight(100)
+        self.desc_input.setObjectName("product_desc_input")
+        
+        name_desc_layout.addLayout(self._create_labeled_widget("🧪 Product Name *", self.name_input, is_large=True))
+        name_desc_layout.addLayout(self._create_labeled_widget("📝 Description *", self.desc_input, is_large=True))
+        
+        top_section_layout.addLayout(name_desc_layout, 3)
+        
+        form_layout.addLayout(top_section_layout)
+        form_layout.addWidget(self._create_separator())
+        
+        # --- Middle section: Reorganized dates, batch, and SKU fields ---
+        
+        # Row 1: Batch, Arrival Date, SKU (3 items in a row)
+        row1_layout = QHBoxLayout()
+        row1_layout.setSpacing(15)
+        
+        # Batch input
+        self.batch_input = QLineEdit()
+        self.batch_input.setPlaceholderText("Auto-generated")
+        self.batch_input.setReadOnly(True)
+        self.batch_input.setStyleSheet("background-color: #f0f0f0;")
+        
+        # Arrival date (set to current date and read-only)
+        self.arrival_input = QDateEdit(calendarPopup=True)
+        self.arrival_input.setDate(QDate.currentDate())
+        self.arrival_input.setReadOnly(True)
+        self.arrival_input.setStyleSheet("background-color: #f0f0f0;")
+        
+        # SKU input
+        self.sku_input = QLineEdit()
+        self.sku_input.setPlaceholderText("e.g., 1000 (Required)")
+        
+        # Add all three fields to row 1
+        row1_layout.addLayout(self._create_labeled_widget("🔢 Batch Number", self.batch_input), 1)
+        row1_layout.addLayout(self._create_labeled_widget("📦 Arrival Date", self.arrival_input), 1)
+        row1_layout.addLayout(self._create_labeled_widget("🔢 SKU (Stock Keeping Unit) *", self.sku_input), 1)
+        
+        # Row 2: Manufacture Date, Best Before Date (2 items in a row)
+        row2_layout = QHBoxLayout()
+        row2_layout.setSpacing(15)
+        
+        # Manufacture date
+        self.manufacture_input = QDateEdit(calendarPopup=True)
+        self.manufacture_input.setDate(QDate.currentDate())
+        
+        # Best Before date
+        self.expired_input = QDateEdit(calendarPopup=True)
+        self.expired_input.setDate(QDate.currentDate().addMonths(9))
+        
+        # Add both date fields to row 2
+        row2_layout.addLayout(self._create_labeled_widget("🏭 Manufacture Date *", self.manufacture_input), 1)
+        row2_layout.addLayout(self._create_labeled_widget("⌛ Best Before Date *", self.expired_input), 1)
+        
+        # Add rows to the main form layout
+        form_layout.addLayout(row1_layout)
+        form_layout.addLayout(row2_layout)
+        
+        # Change location input to dropdown - load from database
+        self.location_input = QComboBox()
+        self.load_rack_locations()
+        self.location_input.setCurrentIndex(0)
+        form_layout.addLayout(self._create_labeled_widget("🏢 Rack Location / Storage *", self.location_input))
+        
+        form_layout.addStretch(1)
+        
+        # Submit button
+        self.submit_btn = QPushButton("✓ Save products information")
+        self.submit_btn.setFixedHeight(50)
+        self.submit_btn.setStyleSheet("QPushButton { background-color: #0504AA; } QPushButton:hover { background-color: #4CC9F0; }, font-size: 18px;")
+        self.submit_btn.clicked.connect(self.add_product)
+        form_layout.addWidget(self.submit_btn)
+        
+        content_widget.setLayout(form_layout)
+        scroll_area.setWidget(content_widget)
+        
+        main_layout.addWidget(scroll_area)
+        
+        # Initialize image path
+        self.image_path = ''
+        
+        page.setLayout(main_layout)
+        return page
+    
+    def loadChatMessages(self):
+        """Load and display all chat messages"""
+        try:
+            conn = sqlite3.connect("testing_system.db", timeout=10.0)
+            cursor = conn.cursor()
+            
+            messages = get_all_messages(cursor)
+            conn.close()
+            
+            # Save current scroll position
+            if hasattr(self, 'chat_display'):
+                scrollbar = self.chat_display.verticalScrollBar()
+                scroll_position = scrollbar.value()
+                was_at_bottom = scroll_position == scrollbar.maximum()
+                
+                # Clear and rebuild chat display
+                self.chat_display.clear()
+                
+                if not messages:
+                    self.chat_display.append("<div style='text-align: center; color: #666; font-style: italic; padding: 20px;'>No messages yet. Start the conversation!</div>")
+                    return
+                
+                # Display all messages in chat bubble format
+                for message in messages:
+                    username, role, text, timestamp, message_id = message
+                    
+                    # Format timestamp to Malaysia time
+                    time_str = format_malaysia_time(timestamp)
+                    
+                    # Get role color
+                    role_color = self.role_colors.get(role.lower(), '#666666')
+                    
+                    # Role icons
+                    role_icons = {
+                        'superadmin': '👑',
+                        'admin': '📢',
+                        'owner': '🏢',
+                        'tester': '🧪'
+                    }
+                    role_icon = role_icons.get(role.lower(), '👤')
+                    
+                    # Process tags in the message
+                    processed_text = self.processTags(text)
+                    
+                    # Chat bubble styling - all messages aligned left with role color
+                    bubble_style = (
+                        f"background: linear-gradient(135deg, {role_color}15 0%, {role_color}08 100%); "
+                        f"color: black; text-align: left; max-width: 80%; "
+                        f"border: 2px solid {role_color}30; border-radius: 15px; "
+                        f"box-shadow: 0 2px 8px rgba(0,0,0,0.1);"
+                    )
+                    username_style = f"color: {role_color}; font-weight: 700;"
+                    time_style = f"color: #666; font-weight: 500;"
+                    
+                    # Format message in sequence: username, timestamp, message
+                    formatted_message = (
+                        f"<div style='margin: 10px 0; padding: 12px 16px; {bubble_style}'>"
+                        f"<div style='{username_style} font-size: 13px; margin-bottom: 2px;'>"
+                        f"{role_icon} {username}"
+                        f"</div>"
+                        f"<div style='{time_style} font-size: 11px; margin-bottom: 8px;'>{time_str}</div>"
+                        f"<div style='font-size: 14px; line-height: 1.5; color: black;'>{processed_text}</div>"
+                        f"</div>"
+                    )
+                    
+                    self.chat_display.append(formatted_message)
+                
+                # Restore scroll position or scroll to bottom
+                if was_at_bottom:  # Auto-scroll if user was at bottom
+                    scrollbar.setValue(scrollbar.maximum())
+                else:
+                    scrollbar.setValue(scroll_position)
+        
+        except Exception as e:
+            print(f"Error loading chat messages: {e}")
+    
+    def processTags(self, message):
+        """Process @username tags in messages"""
+        # Find all @username patterns
+        tag_pattern = r'@(\w+)'
+        
+        def replace_tag(match):
+            username = match.group(1)
+            return f"<span style='background: linear-gradient(90deg, #FF6B35, #F7931E); color: green; padding: 4px 8px; border-radius: 8px; font-weight: 700; font-size: 13px; box-shadow: 0 2px 6px rgba(255,107,53,0.4); border: 1px solid rgba(255,107,53,0.6);'>@{username}</span>"
+        
+        return re.sub(tag_pattern, replace_tag, message)
+    
+    def loadAvailableUsers(self):
+        """Load list of available users for private messaging"""
+        try:
+            conn = sqlite3.connect("testing_system.db", timeout=10.0)
+            cursor = conn.cursor()
+            
+            current_username = self.user_info.get('username', '')
+            users = get_all_users_for_chat(cursor, current_username)
+            conn.close()
+            
+            # Store all users for search functionality
+            self.all_users = users
+            
+            # Update users list
+            if hasattr(self, 'users_list'):
+                self.populateUsersList(users)
+        
+        except Exception as e:
+            print(f"Error loading users: {e}")
+    
+    def populateUsersList(self, users):
+        """Populate the users list with given users"""
+        if hasattr(self, 'users_list'):
+            self.users_list.clear()
+            for username, role_name, fullname in users:
+                role_color = self.role_colors.get(role_name.lower(), '#666666')
+                
+                # Use 👤 icon for all users
+                icon = '👤'
+                
+                # Format: username (fullname) - role
+                display_name = fullname if fullname else username
+                item_text = f"{icon} {username} ({display_name}) - {role_name.title()}"
+                item = QListWidgetItem(item_text)
+                item.setData(Qt.UserRole, {'username': username, 'role_name': role_name, 'fullname': fullname})
+                
+                # Set font size
+                font = item.font()
+                font.setPointSize(10)
+                item.setFont(font)
+                
+                self.users_list.addItem(item)
+    
+    def searchUsers(self):
+        """Search users based on input"""
+        search_text = self.user_search.text().lower()
+        
+        if not search_text:
+            # Show all users
+            self.populateUsersList(self.all_users)
+            return
+        
+        # Filter users
+        filtered_users = []
+        for username, role_name, fullname in self.all_users:
+            if (search_text in username.lower() or 
+                (fullname and search_text in fullname.lower()) or 
+                search_text in role_name.lower()):
+                filtered_users.append((username, role_name, fullname))
+        
+        self.populateUsersList(filtered_users)
+    
+    def selectUserForChat(self, item):
+        """Select a user and show Start Chat button"""
+        user_data = item.data(Qt.UserRole)
+        self.selected_chat_user = user_data['username']
+        self.selected_chat_role = user_data['role_name']
+        self.selected_chat_fullname = user_data['fullname']
+        
+        # Update the label to show selected user
+        display_name = self.selected_chat_fullname if self.selected_chat_fullname else self.selected_chat_user
+        self.selected_user_label.setText(f"Selected: {display_name} ({self.selected_chat_role.title()})")
+        
+        # Show the Start Chat button
+        self.start_chat_btn.setVisible(True)
+        
+        print(f"🎯 Selected user for chat: {self.selected_chat_user}")
+    
+    def startPrivateChatMode(self):
+        """Switch to private chat mode in the main chat area"""
+        if not hasattr(self, 'selected_chat_user'):
+            return
+        
+        self.is_private_chat_mode = True
+        self.active_pm_user = self.selected_chat_user
+        self.active_pm_role = self.selected_chat_role
+        
+        # Update chat group title
+        display_name = self.selected_chat_fullname if self.selected_chat_fullname else self.selected_chat_user
+        self.chat_group.setTitle(f"💬 Private Chat with {display_name} ({self.selected_chat_role.title()})")
+        
+        # Show back button
+        self.back_to_global_btn.setVisible(True)
+        
+        # Update input area for private messaging
+        self.updateInputAreaForPrivateChat()
+        
+        # Load private messages
+        self.loadPrivateMessagesInMainArea()
+        
+        print(f"📱 Started private chat mode with {self.active_pm_user}")
+    
+    def backToGlobalChat(self):
+        """Return to global chat room view"""
+        self.is_private_chat_mode = False
+        self.active_pm_user = None
+        self.active_pm_role = None
+        
+        # Update chat group title
+        self.chat_group.setTitle("Global Chat Room")
+        
+        # Hide back button
+        self.back_to_global_btn.setVisible(False)
+        
+        # Update input area for global chat
+        self.updateInputAreaForGlobalChat()
+        
+        # Load global messages
+        self.loadChatMessages()
+        
+        print(f"🌐 Returned to global chat room")
+    
+    def updateInputAreaForPrivateChat(self):
+        """Update input area for private messaging mode"""
+        role_name = self.user_info.get('role_name', 'owner').lower()
+        
+        # Change group title
+        display_name = self.selected_chat_fullname if self.selected_chat_fullname else self.selected_chat_user
+        self.input_group.setTitle(f"Send Private Message to {display_name}")
+        
+        # Hide tag info for private chat
+        self.tag_info.setVisible(False)
+        
+        # Update placeholder
+        self.message_input.setPlaceholderText(f"Type your private message to {display_name}...")
+        
+        # Show input area for all users in private chat mode
+        self.input_group.setVisible(True)
+        if hasattr(self, 'readonly_label'):
+            self.readonly_label.setVisible(False)
+    
+    def updateInputAreaForGlobalChat(self):
+        """Update input area for global chat mode"""
+        role_name = self.user_info.get('role_name', 'owner').lower()
+        
+        # Change group title back
+        if role_name in ['admin', 'superadmin']:
+            self.input_group.setTitle("Send Public Message")
+        else:
+            self.input_group.setTitle("Send Private Message")
+        
+        # Show tag info for global chat
+        self.tag_info.setVisible(True)
+        
+        # Update placeholder
+        self.message_input.setPlaceholderText("Type your message here... (use @username to tag)")
+        
+        # Show/hide input area based on role for global chat
+        if role_name in ['admin', 'superadmin']:
+            self.input_group.setVisible(True)
+            if hasattr(self, 'readonly_label'):
+                self.readonly_label.setVisible(False)
+        else:
+            self.input_group.setVisible(False)
+            if hasattr(self, 'readonly_label'):
+                self.readonly_label.setVisible(True)
+    
+    def sendMessageHandler(self):
+        """Handle message sending based on current mode"""
+        if self.is_private_chat_mode:
+            self.sendPrivateMessageInMainArea()
+        else:
+            self.sendChatMessage()
+    
+    def sendChatMessage(self):
+        """Send a new chat message to global chat"""
+        if not hasattr(self, 'message_input'):
+            return
+        
+        # Check if user can send global messages
+        role_name = self.user_info.get('role_name', 'owner').lower()
+        if role_name not in ['admin', 'superadmin']:
+            QMessageBox.warning(self, "Access Denied", "Only admin and superadmin can send messages in the global chat room.")
+            return
+        
+        message_text = self.message_input.text().strip()
+        if not message_text:
+            return
+        
+        try:
+            conn = sqlite3.connect("testing_system.db", timeout=10.0)
+            cursor = conn.cursor()
+            
+            user_id = self.user_info.get('user_id')
+            role_id = self.user_info.get('role_id', 1)
+            username = self.user_info.get('username', 'Unknown')
+            
+            # Insert message
+            insert_message(cursor, user_id, username, role_name, role_id, message_text)
+            
+            print(f"💬 Message sent by {username} ({role_name}): {message_text[:30]}...")
+            
+            conn.commit()
+            conn.close()
+            
+            self.message_input.clear()
+            self.loadChatMessages()
+        
+        except Exception as e:
+            print(f"Error sending message: {e}")
+            QMessageBox.critical(self, "Error", f"Failed to send message: {str(e)}")
+    
+    def loadPrivateMessagesInMainArea(self):
+        """Load private messages in the main chat area"""
+        if not self.active_pm_user:
+            return
+        
+        try:
+            conn = sqlite3.connect("testing_system.db", timeout=10.0)
+            cursor = conn.cursor()
+            
+            sender_username = self.user_info.get('username')
+            messages = get_private_messages(cursor, sender_username, self.active_pm_user)
+            conn.close()
+            
+            # Clear and rebuild chat display
+            self.chat_display.clear()
+            
+            if not messages:
+                display_name = self.selected_chat_fullname if self.selected_chat_fullname else self.active_pm_user
+                self.chat_display.append(f"<div style='text-align: center; color: #666; font-style: italic; padding: 20px;'>No messages with {display_name} yet. Start the conversation!</div>")
+                return
+            
+            for message in messages:
+                sender, receiver, text, timestamp, sender_role = message
+                
+                # Format timestamp to Malaysia time
+                time_str = format_malaysia_time(timestamp)
+                
+                # Get role color
+                role_color = self.role_colors.get(sender_role.lower(), '#666666')
+                
+                # Get role icon
+                role_icons = {
+                    'superadmin': '👑',
+                    'admin': '📢',
+                    'owner': '🏢',
+                    'tester': '🧪'
+                }
+                role_icon = role_icons.get(sender_role.lower(), '👤')
+                
+                # Chat bubble styling
+                bubble_style = (
+                    f"background: linear-gradient(135deg, {role_color}15 0%, {role_color}08 100%); "
+                    f"color: black; text-align: left; max-width: 80%; "
+                    f"border: 2px solid {role_color}30; border-radius: 15px; "
+                    f"box-shadow: 0 2px 8px rgba(0,0,0,0.1);"
+                )
+                username_style = f"color: {role_color}; font-weight: 700;"
+                time_style = f"color: #666; font-weight: 500;"
+                
+                # Format message in sequence: username, timestamp, message
+                formatted_message = (
+                    f"<div style='margin: 10px 0; padding: 12px 16px; {bubble_style}'>"
+                    f"<div style='{username_style} font-size: 13px; margin-bottom: 2px;'>"
+                    f"{role_icon} {sender}"
+                    f"</div>"
+                    f"<div style='{time_style} font-size: 11px; margin-bottom: 8px;'>{time_str}</div>"
+                    f"<div style='font-size: 14px; line-height: 1.5; color: black;'>{text}</div>"
+                    f"</div>"
+                )
+                
+                self.chat_display.append(formatted_message)
+            
+            # Scroll to bottom
+            scrollbar = self.chat_display.verticalScrollBar()
+            scrollbar.setValue(scrollbar.maximum())
+        
+        except Exception as e:
+            print(f"Error loading private messages in main area: {e}")
+    
+    def sendPrivateMessageInMainArea(self):
+        """Send a private message from the main chat area"""
+        if not self.active_pm_user:
+            return
+        
+        message_text = self.message_input.text().strip()
+        if not message_text:
+            return
+        
+        try:
+            conn = sqlite3.connect("testing_system.db", timeout=10.0)
+            cursor = conn.cursor()
+            
+            # Insert private message
+            insert_private_message(cursor,
+                                 self.user_info.get('user_id'),
+                                 self.user_info.get('username'),
+                                 self.active_pm_user,
+                                 self.user_info.get('role_name'),
+                                 message_text)
+            
+            conn.commit()
+            conn.close()
+            
+            print(f"💬 Private message sent to {self.active_pm_user}: {message_text[:30]}...")
+            
+            self.message_input.clear()
+            self.loadPrivateMessagesInMainArea()
+        
+        except Exception as e:
+            print(f"Error sending private message in main area: {e}")
+            QMessageBox.critical(self, "Error", f"Failed to send private message: {str(e)}")
+    
+    def refreshChat(self):
+        """Refresh chat messages and users"""
+        if hasattr(self, 'chat_display'):
+            # Load appropriate messages based on current mode
+            if self.is_private_chat_mode:
+                self.loadPrivateMessagesInMainArea()
+            else:
+                self.loadChatMessages()
+            
+            self.loadAvailableUsers()
+    
+    def _create_labeled_widget(self, label_text, widget, is_large=False):
+        """Helper function to create a consistent labeled widget group."""
+        container_layout = QVBoxLayout()
+        label = QLabel(label_text)
+        
+        if is_large:
+            label.setStyleSheet("font-weight: bold; font-size: 18px; margin-bottom: 5px; color: #333;")
+        else:
+            label.setStyleSheet("font-weight: bold; font-size: 14px; margin-bottom: 5px; color: #333;")
+        
+        # Common widget styling
+        base_style = "padding: 8px; border-radius: 5px; border: 1px solid #ccc;"
+        
+        if isinstance(widget, QLineEdit):
+            if is_large:
+                widget.setStyleSheet(f"{base_style} font-size: 16px;")
+                widget.setFixedHeight(45)
+            else:
+                widget.setStyleSheet(f"{base_style} font-size: 13px;")
+                widget.setFixedHeight(38)
+        elif isinstance(widget, QTextEdit):
+            if is_large:
+                widget.setStyleSheet(f"{base_style} font-size: 16px;")
+            else:
+                widget.setStyleSheet(f"{base_style} font-size: 13px;")
+        elif isinstance(widget, QDateEdit):
+            if is_large:
+                widget.setStyleSheet(f"{base_style} font-size: 16px;")
+                widget.setFixedHeight(45)
+            else:
+                widget.setStyleSheet(f"{base_style} font-size: 13px;")
+                widget.setFixedHeight(38)
+        elif isinstance(widget, QComboBox):
+            if is_large:
+                widget.setStyleSheet(f"{base_style} font-size: 16px;")
+                widget.setFixedHeight(45)
+            else:
+                widget.setStyleSheet(f"{base_style} font-size: 13px;")
+                widget.setFixedHeight(38)
+
+        container_layout.addWidget(label)
+        container_layout.addWidget(widget)
+        container_layout.setSpacing(3)
+        return container_layout
+    
+    def _create_separator(self):
+        separator = QFrame()
+        separator.setFrameShape(QFrame.HLine)
+        separator.setFrameShadow(QFrame.Sunken)
+        separator.setStyleSheet("background-color: #e0e0e0; height: 1px;")
+        return separator
+    
+    def frame_click(self, event):
+        """Handle frame click for image upload"""
+        self.upload_image()
+    
+    def upload_image(self):
+        """Upload image functionality from addProducts.py"""
+        path, _ = QFileDialog.getOpenFileName(self, "Select Image", "", "Image Files (*.png *.jpg *.jpeg *.bmp)")
+        if path:
+            self.image_path = path
+            filename = os.path.basename(path)
+            
+            # Update image name label and show the upload another button
+            self.image_name_label.setText(filename)
+            self.upload_another_btn.show()
+            
+            # Load and display the image preview
+            pixmap = QPixmap(path)
+            if not pixmap.isNull():
+                # Scale the pixmap to fit the frame while preserving aspect ratio
+                preview_size = self.image_preview_frame.size()
+                scaled_pixmap = pixmap.scaled(
+                    preview_size.width() - 20, 
+                    preview_size.height() - 20, 
+                    Qt.KeepAspectRatio, 
+                    Qt.SmoothTransformation
+                )
+                
+                # Display the scaled image
+                self.image_preview.setPixmap(scaled_pixmap)
+                self.image_preview.setAlignment(Qt.AlignCenter)
+                self.image_preview.setStyleSheet("border: none; background-color: transparent;")
+                
+                # Update the frame's appearance
+                self.image_preview_frame.setStyleSheet(
+                    "border: 1px solid #4CC9F0; border-radius: 12px; background-color: white; padding: 8px;"
+                )
+            else:
+                self.image_preview.setText("Failed to load image")
+                self.image_preview.setStyleSheet(
+                    "border: none; background-color: transparent; font-size: 16px; color: red;"
+                )
+        else:
+            # If cancelled, don't change anything if there's already an image
+            if not self.image_path:
+                self.image_name_label.setText("Image Name")
+                self.upload_another_btn.hide()
+                self.image_preview.setText("Upload Image (Optional)")
+                self.image_preview.setStyleSheet(
+                    "border: none; background-color: transparent; font-size: 16px; color: #333;"
+                )
+                self.image_preview.setPixmap(QPixmap())  # Clear any previous image
+                self.image_preview_frame.setStyleSheet(
+                    "border: 2px dashed #4CC9F0; border-radius: 12px; background-color: #f5f5fa;"
+                )
+    
+    def load_rack_locations(self):
+        """Load rack locations from the database into the dropdown"""
+        try:
+            conn = sqlite3.connect('testing_system.db')
+            cursor = conn.cursor()
+            cursor.execute("SELECT rack_location_id, rack_location_name FROM racklocations ORDER BY rack_location_name")
+            locations = cursor.fetchall()
+            conn.close()
+            
+            # Add default option
+            self.location_input.addItem("Select location...", None)
+            
+            # Add locations from database
+            for location_id, location_name in locations:
+                self.location_input.addItem(location_name, location_id)
+                
+        except sqlite3.Error as e:
+            print(f"Error loading rack locations: {e}")
+            # Fallback to default options if database fails
+            self.location_input.addItems([
+                "Select location...",
+                "Block A - Rack A - Row 1", "Block A - Rack A - Row 2"
+            ])
+    
+    def get_batch_number(self, product_name):
+        """Generate batch number in format 'ByyyymmddA'"""
+        current_date = datetime.now()
+        date_part = current_date.strftime("%Y%m%d")
+        base_batch = f"B{date_part}"
+        
+        conn = sqlite3.connect('testing_system.db')
+        cursor = conn.cursor()
+        
+        # Get all batches for the current date to determine the next sequence letter
+        cursor.execute("""
+            SELECT batch FROM products 
+            WHERE batch LIKE ? 
+            ORDER BY batch DESC
+        """, (f"{base_batch}%",))
+        
+        existing_batches = cursor.fetchall()
+        conn.close()
+        
+        if not existing_batches:
+            # First batch of the day
+            return f"{base_batch}A"
+        else:
+            # Get the last sequence letter and increment
+            last_batch = existing_batches[0][0]
+            if len(last_batch) > len(base_batch):
+                last_letter = last_batch[-1]
+                # Increment the letter (A->B, B->C, etc.)
+                next_letter = chr(ord(last_letter) + 1)
+                return f"{base_batch}{next_letter}"
+            else:
+                return f"{base_batch}A"
+    
+    def update_batch_number(self):
+        """Auto-update the batch number when the product name changes."""
+        product_name = self.name_input.text().strip()
+        if product_name:
+            # Get the batch number for this product using new format
+            batch = self.get_batch_number(product_name)
+            self.batch_input.setText(batch)
+        else:
+            # Clear the batch field if no product name
+            self.batch_input.clear()
+    
+    def add_product(self):
+        """Add product with validation and confirmation dialog"""
+        # Gather product information
+        name = self.name_input.text().strip()
+        desc = self.desc_input.toPlainText().strip()
+        m_date = self.manufacture_input.date().toString("yyyy-MM-dd")
+        e_date = self.expired_input.date().toString("yyyy-MM-dd")
+        a_date = self.arrival_input.date().toString("yyyy-MM-dd")
+        sku = self.sku_input.text().strip()
+        location_text = self.location_input.currentText()
+        location_id = self.location_input.currentData()
+        batch_input = self.batch_input.text().strip()
+
+        # Validate required fields (all except image)
+        if not name:
+            QMessageBox.warning(self, "Missing Data", "Product name is required.")
+            return
+        
+        if not desc:
+            QMessageBox.warning(self, "Missing Data", "Product description is required.")
+            return
+        
+        if not sku:
+            QMessageBox.warning(self, "Missing Data", "SKU is required.")
+            return
+        
+        if location_text == "Select location..." or location_id is None:
+            QMessageBox.warning(self, "Missing Data", "Please select a rack location.")
+            return
+            
+        # Generate batch number using new format
+        batch = self.get_batch_number(name)
+        barcode_number = self.generate_barcode()
+        
+        # Show confirmation window with product details (no barcode)
+        confirm_dialog = OwnerProductConfirmationDialog(
+            name, 
+            desc, 
+            self.image_path, 
+            batch,
+            m_date,
+            e_date,
+            a_date,
+            sku,
+            location_text,
+            self
+        )
+        
+        if confirm_dialog.exec_() == QDialog.Accepted:
+            self.save_product_to_db(
+                name, desc, m_date, e_date, a_date, sku,
+                location_id, batch, barcode_number, self.image_path
+            )
+            # Clear the form after successful submission
+            self.clear_fields()
+    
+    def generate_barcode(self):
+        """Generate a random barcode number"""
+        import random
+        return ''.join([str(random.randint(0, 9)) for _ in range(12)])
+    
+    def save_product_to_db(self, name, desc, m_date, e_date, a_date, sku, location_id, batch, barcode_number, image_path):
+        """Save the product information to the database"""
+        try:
+            conn = sqlite3.connect('testing_system.db')
+            cursor = conn.cursor()
+
+            # Get the first available branch_id
+            cursor.execute("SELECT branch_id FROM branches LIMIT 1")
+            branch_result = cursor.fetchone()
+            branch_id = branch_result[0] if branch_result else 1
+
+            # Correct column mapping based on the updated products table schema
+            cursor.execute('''
+                INSERT INTO products (
+                    owner_id, product_name, product_desc, product_image, batch, arrival_date, 
+                    branch_id, batch, rack_location_id, sku, manufacture_date, 
+                    expired_date
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                self.user_info['user_id'],  # owner_id (current user is the owner adding the product)
+                name,                       # product_name
+                desc,                       # product_desc (description field)
+                image_path,                 # product_image
+                batch,                      # batch
+                a_date,                     # arrival_date
+                branch_id,                  # branch_id
+                batch,                      # batch
+                location_id,                # rack_location_id
+                int(sku),                   # sku (ensure it's integer)
+                m_date,                     # manufacture_date
+                e_date                    # expired_date
+            ))
+            conn.commit()
+            conn.close()
+
+            QMessageBox.information(
+                self,
+                "Request Submitted",
+                "Your request to add the items already sent to admin. Please wait for approval, it will takes 1-3 working days."
+            )
+        except sqlite3.Error as e:
+            QMessageBox.critical(
+                self,
+                "Database Error",
+                f"Failed to save product: {str(e)}"
+            )
+
+    def clear_fields(self):
+        """Clear all form fields"""
+        self.name_input.clear()
+        self.desc_input.clear()
+        self.sku_input.clear()
+        self.batch_input.clear()
+        self.location_input.setCurrentIndex(0)
+        self.manufacture_input.setDate(QDate.currentDate())
+        self.expired_input.setDate(QDate.currentDate().addMonths(9))
+        self.arrival_input.setDate(QDate.currentDate())
+        self.image_path = ''
+        self.image_name_label.setText("Image Name")
+        self.upload_another_btn.hide()
+        self.image_preview.setText("Upload Image (Optional)")
+        self.image_preview.setStyleSheet("border: none; background-color: transparent; font-size: 16px; color: #333;")
+        self.image_preview.setPixmap(QPixmap())
+        
+        # Reset the frame's appearance
+        self.image_preview_frame.setStyleSheet(
+            "border: 2px dashed #4CC9F0; border-radius: 12px; background-color: #f5f5fa;"
+        )
+
+    def clearAddProductForm(self):
+        """Clear all fields in the add product form - backwards compatibility"""
+        self.clear_fields()
+    
+    def browseProductImage(self):
+        """Browse for product image file"""
+        try:
+            file_path, _ = QFileDialog.getOpenFileName(
+                self, 
+                "Select Product Image", 
+                "", 
+                "Image Files (*.png *.jpg *.jpeg *.bmp *.gif)"
+            )
+            
+            if file_path:
+                self.add_image_path.setText(file_path)
+                print(f"📷 Product image selected: {file_path}")
+                
+        except Exception as e:
+            print(f"Error browsing image: {e}")
+            QMessageBox.warning(self, "Error", "Could not browse for image file.")
+    
+    def saveNewProduct(self):
+        """Save the new product"""
+        # Validate required fields
+        if not self.add_product_name.text().strip():
+            QMessageBox.warning(self, "Validation Error", "Product name is required!")
+            self.add_product_name.setFocus()
+            return
+        
+        if self.add_sku.value() < 1:
+            QMessageBox.warning(self, "Validation Error", "SKU/Units must be at least 1!")
+            self.add_sku.setFocus()
+            return
+        
+        try:
+            conn = sqlite3.connect("testing_system.db", timeout=10.0)
+            cursor = conn.cursor()
+            
+            # Prepare data
+            user_id = self.user_info.get('user_id')
+            product_name = self.add_product_name.text().strip()
+            batch = self.add_batch.text().strip()
+            sku = self.add_sku.value()
+            barcode = self.add_barcode.text().strip()
+            manufacture_date = self.add_manufacture_date.date().toString("yyyy-MM-dd")
+            expiry_date = self.add_expiry_date.date().toString("yyyy-MM-dd")
+            arrival_date = QDate.currentDate().toString("yyyy-MM-dd")
+            image_path = self.add_image_path.text().strip()
+            
+            # Insert new product
+            cursor.execute("""
+                INSERT INTO products (owner_id, product_name, batch, sku, 
+                                    manufacture_date, expired_date, arrival_date, 
+                                    barcode, product_image, rack_location_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                user_id, product_name, batch, sku,
+                manufacture_date, expiry_date, arrival_date,
+                barcode, image_path, None
+            ))
+            
+            conn.commit()
+            conn.close()
+            
+            print(f"✓ New product saved: {product_name}")
+            QMessageBox.information(self, "Success", f"Product '{product_name}' has been saved successfully!")
+            
+            # Clear form and go back to My Products
+            self.clearAddProductForm()
+            self.switchPage(0)  # Back to My Products
+            
+        except sqlite3.Error as e:
+            print(f"Database error saving product: {e}")
+            QMessageBox.critical(self, "Database Error", f"Error saving product: {str(e)}")
+        except Exception as e:
+            print(f"Error saving product: {e}")
+            QMessageBox.critical(self, "Error", f"An unexpected error occurred: {str(e)}")
+    
+    def createMyProfilePage(self):
+        page = QWidget()
+        page.setObjectName("contentPage")
+        
+        layout = QVBoxLayout()
+        layout.setContentsMargins(30, 30, 30, 30)
+        
+        # Header
+        title = QLabel("👤 My Profile")
+        title.setObjectName("pageTitle")
+        layout.addWidget(title)
+        
+        # Profile form
+        form_widget = QFrame()
+        form_widget.setObjectName("formFrame")
+        form_layout = QFormLayout()
+        form_layout.setContentsMargins(30, 30, 30, 30)
+        form_layout.setSpacing(20)
+        
+        # Profile fields - view only
+        self.profile_fullname = QLineEdit()
+        self.profile_fullname.setObjectName("formField")
+        self.profile_fullname.setReadOnly(True)
+        
+        self.profile_username = QLineEdit()
+        self.profile_username.setObjectName("formField")
+        self.profile_username.setReadOnly(True)
+        
+        self.profile_password = QLineEdit()
+        self.profile_password.setObjectName("formField")
+        self.profile_password.setReadOnly(True)
+        self.profile_password.setEchoMode(QLineEdit.Password)
+        self.profile_password.setText("****")  # Masked password
+        
+        self.profile_role = QLineEdit()
+        self.profile_role.setObjectName("formField")
+        self.profile_role.setReadOnly(True)
+        
+        self.profile_branch = QLineEdit()
+        self.profile_branch.setObjectName("formField")
+        self.profile_branch.setReadOnly(True)
+        
+        # Editable fields
+        self.profile_email = QLineEdit()
+        self.profile_email.setObjectName("formField")
+        
+        self.profile_phone = QLineEdit()
+        self.profile_phone.setObjectName("formField")
+        
+        # Add fields to form
+        form_layout.addRow("Full Name:", self.profile_fullname)
+        form_layout.addRow("Username:", self.profile_username)
+        form_layout.addRow("Password:", self.profile_password)
+        form_layout.addRow("Role:", self.profile_role)
+        form_layout.addRow("Branch:", self.profile_branch)
+        form_layout.addRow("Email:", self.profile_email)
+        form_layout.addRow("Phone Number:", self.profile_phone)
+        
+        # Buttons layout
+        buttons_layout = QHBoxLayout()
+        
+        # Reset password button
+        reset_password_btn = QPushButton("🔒 Reset Password")
+        reset_password_btn.setObjectName("primaryButton")
+        reset_password_btn.clicked.connect(self.resetPassword)
+        
+        # Update profile button
+        update_profile_btn = QPushButton("💾 Update Profile")
+        update_profile_btn.setObjectName("primaryButton")
+        update_profile_btn.clicked.connect(self.updateProfile)
+        
+        buttons_layout.addWidget(reset_password_btn)
+        buttons_layout.addWidget(update_profile_btn)
+        buttons_layout.addStretch()
+        
+        form_layout.addRow("", buttons_layout)
+        
+        # Info label
+        info_label = QLabel("ℹ️ Only Email and Phone Number can be updated. Other fields are view-only.")
+        info_label.setObjectName("placeholderSubText")
+        info_label.setWordWrap(True)
+        form_layout.addRow("", info_label)
+        
+        form_widget.setLayout(form_layout)
+        layout.addWidget(form_widget)
+        layout.addStretch()
+        
+        page.setLayout(layout)
+        return page
+    
+    def loadProductData(self):
+        """Load products data from database and display as cards"""
+        try:
+            conn = sqlite3.connect("testing_system.db")
+            cursor = conn.cursor()
+            
+            # Get owner's products with rack location names
+            cursor.execute("""
+                SELECT p.product_id, p.product_name, p.product_image, 
+                       COALESCE(r.rack_location_name, 'No Location') as rack_location_name,
+                       p.sku, p.manufacture_date, p.expired_date, p.barcode
+                FROM products p
+                LEFT JOIN racklocations r ON p.rack_location_id = r.rack_location_id
+                WHERE p.owner_id = ?
+                ORDER BY p.product_name
+            """, (self.user_info['user_id'],))
+            
+            self.all_products = cursor.fetchall()
+            
+            # No automatic sample data creation - load only real products
+            
+            conn.close()
+            
+            # Display all products initially
+            self.displayProducts(self.all_products)
+            
+        except sqlite3.Error as e:
+            QMessageBox.warning(self, "Database Error", f"Error loading products: {str(e)}")
+    
+    def displayProducts(self, products):
+        """Display products as cards in grid layout"""
+        # Clear existing cards
+        for i in reversed(range(self.products_grid_layout.count())):
+            child = self.products_grid_layout.itemAt(i).widget()
+            if child:
+                child.setParent(None)
+        
+        if not products:
+            # Show enhanced empty state
+            empty_container = QFrame()
+            empty_container.setObjectName("emptyStateContainer")
+            empty_layout = QVBoxLayout()
+            empty_layout.setAlignment(Qt.AlignCenter)
+            empty_layout.setSpacing(15)
+            
+            # Empty state icon
+            empty_icon = QLabel("📦")
+            empty_icon.setAlignment(Qt.AlignCenter)
+            empty_icon.setStyleSheet("font-size: 64px; color: #90CAF9; margin: 20px;")
+            
+            # Empty state message
+            empty_label = QLabel("No products found")
+            empty_label.setObjectName("emptyStateLabel")
+            empty_label.setAlignment(Qt.AlignCenter)
+            
+            # Empty state subtitle
+            empty_subtitle = QLabel("Add your first product to get started!")
+            empty_subtitle.setAlignment(Qt.AlignCenter)
+            empty_subtitle.setStyleSheet("font-size: 14px; color: #999; margin-top: 5px;")
+            
+            empty_layout.addWidget(empty_icon)
+            empty_layout.addWidget(empty_label)
+            empty_layout.addWidget(empty_subtitle)
+            empty_container.setLayout(empty_layout)
+            
+            self.products_grid_layout.addWidget(empty_container, 0, 0, 1, 3)
+            return
+        
+        # Add product cards to grid (3 columns for better spacing with larger cards)
+        row = 0
+        col = 0
+        for product in products:
+            card = self.createProductCard(product)
+            self.products_grid_layout.addWidget(card, row, col)
+            
+            col += 1
+            if col >= 3:  # 3 cards per row for better layout with larger cards
+                col = 0
+                row += 1
+    
+    def filterProducts(self):
+        """Filter products based on search input"""
+        if not hasattr(self, 'all_products'):
+            return
+        
+        search_text = self.search_input.text().strip().lower()
+        
+        if not search_text:
+            # Show all products
+            self.displayProducts(self.all_products)
+            return
+        
+        # Filter products by name
+        filtered_products = []
+        for product in self.all_products:
+            product_name = product[1] or ""  # product_name is at index 1
+            if search_text in product_name.lower():
+                filtered_products.append(product)
+        
+        # Display filtered products
+        self.displayProducts(filtered_products)
+    
+    def performSearch(self):
+        """Perform search when search button is clicked or Enter is pressed"""
+        self.filterProducts()  # Use the existing filter method
+        
+        search_text = self.search_input.text().strip()
+        if search_text:
+            print(f"🔍 Searching for products containing: '{search_text}'")
+        else:
+            print("🔍 Showing all products")
+    
+    def viewProductDetails(self, product_id):
+        """Show detailed product information in a custom dialog"""
+        dialog = ProductDetailsDialog(self, product_id)
+        dialog.exec_()
+
+
+
+    def loadProfileData(self):
+        """Load user profile data from database"""
+        try:
+            conn = sqlite3.connect("testing_system.db")
+            cursor = conn.cursor()
+            
+            # Get complete user profile with branch name
+            cursor.execute("""
+                SELECT u.fullname, u.username, u.password, r.role_name, 
+                       COALESCE(b.branch_name, 'No Branch') as branch_name, 
+                       u.email, u.phone_no
+                FROM users u
+                LEFT JOIN roles r ON u.role = r.role_id
+                LEFT JOIN branches b ON u.branch_id = b.branch_id
+                WHERE u.user_id = ?
+            """, (self.user_info['user_id'],))
+            
+            result = cursor.fetchone()
+            if result:
+                fullname, username, password, role_name, branch_name, email, phone_no = result
+                
+                self.profile_fullname.setText(fullname or '')
+                self.profile_username.setText(username or '')
+                self.profile_password.setText('****')  # Always show masked
+                self.profile_role.setText(role_name or '')
+                self.profile_branch.setText(branch_name or '')
+                self.profile_email.setText(email or '')
+                self.profile_phone.setText(phone_no or '')
+            
+            conn.close()
+            
+        except sqlite3.Error as e:
+            QMessageBox.warning(self, "Database Error", f"Error loading profile: {str(e)}")
+            # Fallback to user_info if database fails
+            self.profile_fullname.setText(self.user_info.get('fullname', ''))
+            self.profile_username.setText(self.user_info.get('username', ''))
+            self.profile_password.setText('****')
+            self.profile_role.setText(self.user_info.get('role_name', ''))
+            self.profile_branch.setText(self.user_info.get('branch_name', ''))
+            self.profile_email.setText(self.user_info.get('email', ''))
+            self.profile_phone.setText('')
+    
+    def addProduct(self):
+        """Switch to internal Add Product page within the dashboard"""
+        # Page index 4 corresponds to createAddProductPage()
+        self.switchPage(4)
+        # Clear the form after switching to make sure everything is initialized
+        if hasattr(self, 'clear_fields'):
+            self.clear_fields()
+    
+    def editProduct(self, product_id):
+        """Open edit product dialog"""
+        dialog = ProductDialog(self, "Edit Product", product_id)
+        if dialog.exec_() == QDialog.Accepted:
+            self.loadProductData()
+    
+    def deleteProduct(self, product_id):
+        """Delete product"""
+        reply = QMessageBox.question(self, "Delete Product", 
+                                   "Are you sure you want to delete this product?",
+                                   QMessageBox.Yes | QMessageBox.No)
+        
+        if reply == QMessageBox.Yes:
+            try:
+                conn = sqlite3.connect("testing_system.db")
+                cursor = conn.cursor()
+                cursor.execute("DELETE FROM products WHERE product_id = ?", (product_id,))
+                conn.commit()
+                conn.close()
+                
+                QMessageBox.information(self, "Success", "Product deleted successfully!")
+                self.loadProductData()
+                
+            except sqlite3.Error as e:
+                QMessageBox.warning(self, "Database Error", f"Error deleting product: {str(e)}")
+    
+    def viewApplication(self, application_id):
+        """View application details"""
+        QMessageBox.information(self, "View Application", f"Viewing application {application_id}")
+    
+    def updateProfile(self):
+        """Update user profile - only email and phone number"""
+        try:
+            # Validate email format
+            email = self.profile_email.text().strip()
+            phone = self.profile_phone.text().strip()
+            
+            if email and "@" not in email:
+                QMessageBox.warning(self, "Validation Error", "Please enter a valid email address.")
+                return
+            
+            conn = sqlite3.connect("testing_system.db")
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                UPDATE users 
+                SET email = ?, phone_no = ? 
+                WHERE user_id = ?
+            """, (email, phone, self.user_info['user_id']))
+            
+            conn.commit()
+            conn.close()
+            
+            # Update user_info
+            self.user_info['email'] = email
+            self.user_info['phone_no'] = phone
+            
+            QMessageBox.information(self, "Success", "Profile updated successfully!\nOnly Email and Phone Number have been updated.")
+            
+        except sqlite3.Error as e:
+            QMessageBox.warning(self, "Database Error", f"Error updating profile: {str(e)}")
+    
+    def resetPassword(self):
+        """Reset user password with beautiful dialog"""
+        try:
+            dialog = ResetPasswordDialog(self)
+            if dialog.exec_() == QDialog.Accepted:
+                current_password, new_password = dialog.getPasswords()
+                
+                # Verify current password
+                conn = sqlite3.connect("testing_system.db")
+                cursor = conn.cursor()
+                
+                cursor.execute("SELECT password FROM users WHERE user_id = ?", (self.user_info['user_id'],))
+                result = cursor.fetchone()
+                
+                if not result or str(result[0]) != current_password:
+                    self.showStyledMessageBox("❌ Error", "Current password is incorrect!", "error")
+                    conn.close()
+                    return
+                
+                # Update password
+                cursor.execute("UPDATE users SET password = ? WHERE user_id = ?", 
+                             (int(new_password), self.user_info['user_id']))
+                conn.commit()
+                conn.close()
+                
+                self.showStyledMessageBox("✅ Success", "Password reset successfully!", "success")
+                
+        except Exception as e:
+            self.showStyledMessageBox("❌ Error", f"Error resetting password: {str(e)}", "error")
+    
+    def logout(self):
+        """Handle logout with beautiful dialog"""
+        reply = self.showStyledQuestionBox("🚪 Logout Confirmation", 
+                                          "Are you sure you want to logout?",
+                                          "This will close the Owner Dashboard and return you to the login screen.")
+        
+        if reply:
+            print(f"✓ User '{self.user_info.get('username')}' logged out from Owner Dashboard")
+            self.close()
+            
+            # Show the login window again
+            self.show_login_window()
+    
+    def show_login_window(self):
+        """Show the login window again"""
+        try:
+            from user1 import SignInSignUpWindow
+            self.login_window = SignInSignUpWindow()
+            self.login_window.show()
+        except ImportError:
+            print("Could not import login window")
+    
+    def showStyledMessageBox(self, title, message, msg_type="info"):
+        """Show a styled message box matching the dashboard theme"""
+        msg_box = QMessageBox(self)
+        msg_box.setWindowTitle(title)
+        msg_box.setText(message)
+        
+        # Set colors based on message type
+        if msg_type == "success":
+            color = self.colors['success']
+            icon = QMessageBox.Information
+        elif msg_type == "error":
+            color = self.colors['error']
+            icon = QMessageBox.Critical
+        elif msg_type == "warning":
+            color = self.colors['warning']
+            icon = QMessageBox.Warning
+        else:
+            color = self.colors['primary']
+            icon = QMessageBox.Information
+        
+        msg_box.setIcon(icon)
+        
+        # Apply custom styling
+        msg_box.setStyleSheet(f"""
+            QMessageBox {{
+                background-color: white;
+                border: 2px solid {color};
+                border-radius: 12px;
+                font-family: 'Segoe UI', Arial, sans-serif;
+                font-size: 14px;
+            }}
+            QMessageBox QLabel {{
+                color: #212121;
+                padding: 20px;
+                font-size: 14px;
+                font-weight: 500;
+            }}
+            QMessageBox QPushButton {{
+                background-color: {color};
+                color: white;
+                border: none;
+                border-radius: 6px;
+                padding: 10px 25px;
+                font-size: 13px;
+                font-weight: bold;
+                min-width: 80px;
+                margin: 5px;
+            }}
+            QMessageBox QPushButton:hover {{
+                background-color: {color}dd;
+            }}
+            QMessageBox QPushButton:pressed {{
+                background-color: {color}aa;
+            }}
+        """)
+        
+        msg_box.exec_()
+    
+    def showStyledQuestionBox(self, title, question, details=""):
+        """Show a styled question dialog for logout confirmation"""
+        msg_box = QMessageBox(self)
+        msg_box.setWindowTitle(title)
+        msg_box.setText(question)
+        if details:
+            msg_box.setInformativeText(details)
+        
+        msg_box.setIcon(QMessageBox.Question)
+        
+        # Custom buttons
+        yes_btn = msg_box.addButton("Yes, Logout", QMessageBox.YesRole)
+        no_btn = msg_box.addButton("Cancel", QMessageBox.NoRole)
+        msg_box.setDefaultButton(no_btn)
+        
+        # Apply custom styling
+        msg_box.setStyleSheet(f"""
+            QMessageBox {{
+                background-color: white;
+                border: 2px solid {self.colors['primary']};
+                border-radius: 12px;
+                font-family: 'Segoe UI', Arial, sans-serif;
+                font-size: 14px;
+                min-width: 400px;
+            }}
+            QMessageBox QLabel {{
+                color: #212121;
+                padding: 20px;
+                font-size: 14px;
+                font-weight: 500;
+            }}
+            QMessageBox QPushButton {{
+                border: none;
+                border-radius: 6px;
+                padding: 12px 25px;
+                font-size: 13px;
+                font-weight: bold;
+                min-width: 100px;
+                margin: 5px;
+            }}
+            QMessageBox QPushButton[text="Yes, Logout"] {{
+                background-color: {self.colors['error']};
+                color: white;
+            }}
+            QMessageBox QPushButton[text="Yes, Logout"]:hover {{
+                background-color: #D32F2F;
+            }}
+            QMessageBox QPushButton[text="Cancel"] {{
+                background-color: {self.colors['text_secondary']};
+                color: white;
+            }}
+            QMessageBox QPushButton[text="Cancel"]:hover {{
+                background-color: #5a6268;
+            }}
+        """)
+        
+        msg_box.exec_()
+        return msg_box.clickedButton() == yes_btn
+    
+    def applyStyles(self):
+        self.setStyleSheet(f"""
+            QMainWindow {{
+                background-color: {self.colors['light']};
+            }}
+            
+            #sidebar {{
+                background-color: {self.colors['sidebar']};
+                border: none;
+            }}
+            
+            #sidebarHeader {{
+                background-color: {self.colors['primary']};
+                border: none;
+            }}
+            
+            #welcomeText {{
+                color: white;
+                font-size: 12px;
+                font-weight: normal;
+                margin-bottom: 5px;
+            }}
+            
+            #systemText {{
+                color: white;
+                font-size: 14px;
+                font-weight: bold;
+                margin-bottom: 10px;
+            }}
+            
+            #usernameText {{
+                color: {self.colors['accent']};
+                font-size: 16px;
+                font-weight: bold;
+                margin-bottom: 10px;
+            }}
+            
+            #menuButton {{
+                background-color: transparent;
+                color: white;
+                border: none;
+                border-radius: 8px;
+                padding: 12px 20px;
+                text-align: left;
+                font-size: 14px;
+                margin: 2px 0px;
+            }}
+            
+            #menuButton:hover {{
+                background-color: {self.colors['primary']};
+            }}
+            
+            #menuButtonActive {{
+                background-color: {self.colors['accent']};
+                color: white;
+                border: none;
+                border-radius: 8px;
+                padding: 12px 20px;
+                text-align: left;
+                font-size: 14px;
+                font-weight: bold;
+                margin: 2px 0px;
+            }}
+            
+            #sidebarBottom {{
+                background-color: rgba(255, 255, 255, 0.1);
+                border-radius: 10px;
+                margin: 10px;
+            }}
+            
+            #userInfoText, #loginTimeText {{
+                color: white;
+                font-size: 11px;
+                margin: 2px 0px;
+            }}
+            
+            #logoutButton {{
+                background-color: {self.colors['error']};
+                color: white;
+                border: none;
+                border-radius: 6px;
+                padding: 8px 16px;
+                font-size: 12px;
+                font-weight: bold;
+            }}
+            
+            #logoutButton:hover {{
+                background-color: #D32F2F;
+            }}
+            
+            #contentStack {{
+                background-color: {self.colors['light']};
+            }}
+            
+            #contentPage {{
+                background-color: white;
+                margin: 10px;
+                border-radius: 10px;
+            }}
+            
+            #pageTitle {{
+                color: {self.colors['primary']};
+                font-size: 24px;
+                font-weight: bold;
+                margin-bottom: 20px;
+            }}
+            
+            #primaryButton {{
+                background-color: {self.colors['primary']};
+                color: white;
+                border: none;
+                border-radius: 8px;
+                padding: 10px 20px;
+                font-size: 14px;
+                font-weight: bold;
+            }}
+            
+            #primaryButton:hover {{
+                background-color: {self.colors['secondary']};
+            }}
+            
+            #actionButton {{
+                background-color: {self.colors['accent']};
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 5px 10px;
+                font-size: 12px;
+                margin: 2px;
+            }}
+            
+            #actionButton:hover {{
+                background-color: {self.colors['primary']};
+            }}
+            
+            #deleteButton {{
+                background-color: {self.colors['error']};
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 5px 10px;
+                font-size: 12px;
+                margin: 2px;
+            }}
+            
+            #deleteButton:hover {{
+                background-color: #D32F2F;
+            }}
+            
+            #dataTable {{
+                background-color: white;
+                gridline-color: {self.colors['light']};
+                border: 1px solid {self.colors['light']};
+                border-radius: 8px;
+            }}
+            
+            #dataTable::item {{
+                padding: 8px;
+                border-bottom: 1px solid {self.colors['light']};
+            }}
+            
+            #dataTable::item:selected {{
+                background-color: {self.colors['light']};
+                color: {self.colors['primary']};
+            }}
+            
+            #filterCombo {{
+                background-color: white;
+                border: 2px solid {self.colors['light']};
+                border-radius: 6px;
+                padding: 8px 12px;
+                font-size: 14px;
+                min-width: 120px;
+            }}
+            
+            #filterCombo:focus {{
+                border-color: {self.colors['accent']};
+            }}
+            
+            #placeholderFrame {{
+                background-color: {self.colors['light']};
+                border-radius: 15px;
+                margin: 50px;
+            }}
+            
+            #placeholderText {{
+                color: {self.colors['primary']};
+                font-size: 18px;
+                font-weight: bold;
+                margin: 10px;
+            }}
+            
+            #placeholderSubText {{
+                color: {self.colors['text_secondary']};
+                font-size: 14px;
+                margin: 10px;
+            }}
+            
+            #formFrame {{
+                background-color: white;
+                border: 1px solid {self.colors['light']};
+                border-radius: 10px;
+                margin: 20px 0px;
+            }}
+            
+            #formField {{
+                background-color: white;
+                border: 2px solid {self.colors['light']};
+                border-radius: 6px;
+                padding: 10px 12px;
+                font-size: 14px;
+            }}
+            
+            #formField:focus {{
+                border-color: {self.colors['accent']};
+            }}
+            
+            #formField:read-only {{
+                background-color: {self.colors['light']};
+                color: {self.colors['text_secondary']};
+            }}
+            
+            QFormLayout QLabel {{
+                color: {self.colors['text_primary']};
+                font-size: 14px;
+                font-weight: bold;
+                margin-bottom: 5px;
+            }}
+            
+            /* My Products Page Styles */
+            #addProductButton {{
+                background-color: {self.colors['primary']};
+                color: white;
+                border: none;
+                border-radius: 8px;
+                padding: 12px 24px;
+                font-size: 14px;
+                font-weight: bold;
+                min-width: 120px;
+            }}
+            
+            #addProductButton:hover {{
+                background-color: {self.colors['secondary']};
+            }}
+            
+            #searchFrame {{
+                background-color: {self.colors['light']};
+                border-radius: 12px;
+                border: 1px solid #BBDEFB;
+                padding: 5px;
+            }}
+            
+            #searchLabel {{
+                color: {self.colors['text_primary']};
+                font-size: 14px;
+                font-weight: bold;
+                margin-right: 15px;
+                min-width: 250px;
+            }}
+            
+            #searchInput {{
+                background-color: white;
+                border: 2px solid {self.colors['light']};
+                border-radius: 8px;
+                padding: 10px 15px;
+                font-size: 14px;
+                min-height: 20px;
+            }}
+            
+            #searchInput:focus {{
+                border-color: {self.colors['accent']};
+                outline: none;
+            }}
+            
+            #searchButton {{
+                background-color: {self.colors['primary']};
+                color: white;
+                border: none;
+                border-radius: 8px;
+                padding: 10px 20px;
+                font-size: 14px;
+                font-weight: bold;
+                min-width: 80px;
+                margin-left: 10px;
+            }}
+            
+            #searchButton:hover {{
+                background-color: {self.colors['secondary']};
+            }}
+            
+            #productsScrollArea {{
+                background-color: transparent;
+                border: none;
+            }}
+            
+            #productsContainer {{
+                background-color: transparent;
+            }}
+            
+            /* Simplified Product Card Styles */
+            #productCard {{
+                background-color: white;
+                border: 2px solid #E3F2FD;
+                border-radius: 12px;
+                margin: 10px;
+                box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+                transition: all 0.3s ease;
+            }}
+            
+            #productCard:hover {{
+                border-color: {self.colors['accent']};
+                box-shadow: 0 6px 20px rgba(33, 150, 243, 0.15);
+                transform: translateY(-2px);
+            }}
+            
+            #productImageContainer {{
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 #F8F9FA, stop:1 #E9ECEF);
+                border: 1px solid #E3F2FD;
+                border-radius: 8px;
+            }}
+            
+            #productImage {{
+                background: transparent;
+                border: none;
+                border-radius: 6px;
+            }}
+            
+            #productInfoContainer {{
+                background: transparent;
+                padding: 0;
+            }}
+            
+            #productName {{
+                font-size: 15px;
+                font-weight: bold;
+                color: black;
+                line-height: 1.2;
+                margin-bottom: 3px;
+            }}
+            
+            #productId {{
+                font-size: 12px;
+                font-weight: normal;
+                color: black;
+                margin-top: 2px;
+                margin-bottom: 3px;
+            }}
+            
+            #productBatch {{
+                font-size: 12px;
+                color: grey;
+                margin-top: 2px;
+            }}
+            
+            #productButtonsContainer {{
+                background-color: transparent;
+                border: none;
+                margin-top: 5px;
+                padding: 0;
+            }}
+            
+            #productDetailsButton {{
+                background-color: {self.colors['accent']};
+                color: white;
+                border: none;
+                border-radius: 8px;
+                padding: 10px 16px;
+                font-size: 13px;
+                font-weight: bold;
+                min-width: 70px;
+                transition: all 0.2s ease;
+            }}
+            
+            #productDetailsButton:hover {{
+                background-color: {self.colors['primary']};
+                transform: translateY(-1px);
+                box-shadow: 0 4px 8px rgba(33, 150, 243, 0.3);
+            }}
+            
+            #productEditButton {{
+                background-color: #FF9800;
+                color: white;
+                border: none;
+                border-radius: 8px;
+                padding: 10px 16px;
+                font-size: 13px;
+                font-weight: bold;
+                min-width: 70px;
+                transition: all 0.2s ease;
+            }}
+            
+            #productEditButton:hover {{
+                background-color: #F57C00;
+                transform: translateY(-1px);
+                box-shadow: 0 4px 8px rgba(255, 152, 0, 0.3);
+            }}
+            
+            /* Legacy styles for backward compatibility */
+            #productImageFrame {{
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 #E3F2FD, stop:0.5 #BBDEFB, stop:1 #90CAF9);
+                border-radius: 8px;
+                margin-bottom: 10px;
+            }}
+            
+            #productName {{
+                color: {self.colors['text_primary']};
+                font-size: 13px;
+                font-weight: bold;
+                margin-bottom: 5px;
+            }}
+            
+            #productDetail {{
+                color: {self.colors['text_secondary']};
+                font-size: 11px;
+                margin: 1px 0px;
+            }}
+            
+            #moreButton {{
+                background-color: {self.colors['accent']};
+                color: white;
+                border: none;
+                border-radius: 6px;
+                padding: 8px 16px;
+                font-size: 12px;
+                font-weight: bold;
+                min-width: 60px;
+            }}
+            
+            #moreButton:hover {{
+                background-color: {self.colors['primary']};
+            }}
+            
+            #editButton {{
+                background-color: #FF9800;
+                color: white;
+                border: none;
+                border-radius: 6px;
+                padding: 8px 16px;
+                font-size: 12px;
+                font-weight: bold;
+                min-width: 60px;
+            }}
+            
+            #editButton:hover {{
+                background-color: #F57C00;
+            }}
+            
+            #statusLabel {{
+                color: {self.colors['text_secondary']};
+                font-size: 14px;
+                margin: 10px;
+                text-align: center;
+            }}
+            
+            #emptyStateLabel {{
+                color: {self.colors['text_secondary']};
+                font-size: 16px;
+                margin: 50px;
+                text-align: center;
+            }}
+            
+            #emptyStateContainer {{
+                background-color: white;
+                border: 2px dashed #E3F2FD;
+                border-radius: 16px;
+                margin: 50px;
+                padding: 40px;
+                text-align: center;
+            }}
+            
+            /* Chat Interface Styles */
+            #chatWidget {{
+                background-color: white;
+                border-radius: 12px;
+                border: 1px solid #E3F2FD;
+            }}
+            
+            #chatTitle {{
+                color: {self.colors['primary']};
+                font-size: 18px;
+                font-weight: bold;
+                margin: 10px 0px;
+            }}
+            
+            #globalChatButton {{
+                background-color: #4CAF50;
+                color: white;
+                border: none;
+                border-radius: 8px;
+                padding: 10px 20px;
+                font-size: 14px;
+                font-weight: bold;
+            }}
+            
+            #globalChatButton:hover {{
+                background-color: #45a049;
+            }}
+            
+            #chatDisplay {{
+                background-color: white;
+                border: 1px solid #E0E0E0;
+                border-radius: 8px;
+                padding: 15px;
+                font-family: Arial, sans-serif;
+                font-size: 13px;
+            }}
+            
+            #chatInputFrame {{
+                background-color: #F8F9FA;
+                border: 1px solid #E0E0E0;
+                border-radius: 8px;
+                margin-top: 10px;
+            }}
+            
+            #tipLabel {{
+                color: #FF9800;
+                font-size: 12px;
+                font-style: italic;
+                margin-bottom: 5px;
+            }}
+            
+            #messageInput {{
+                background-color: white;
+                border: 1px solid #E0E0E0;
+                border-radius: 6px;
+                padding: 10px 12px;
+                font-size: 14px;
+                min-height: 20px;
+            }}
+            
+            #messageInput:focus {{
+                border-color: {self.colors['accent']};
+                outline: none;
+            }}
+            
+            #sendButton {{
+                background-color: #4CAF50;
+                color: white;
+                border: none;
+                border-radius: 6px;
+                padding: 10px 20px;
+                font-size: 14px;
+                font-weight: bold;
+                margin-left: 10px;
+            }}
+            
+            #sendButton:hover {{
+                background-color: #45a049;
+            }}
+            
+            #usersWidget {{
+                background-color: white;
+                border-radius: 12px;
+                border: 1px solid #E3F2FD;
+                padding: 15px;
+            }}
+            
+            #usersTitle {{
+                background-color: #4CAF50;
+                color: white;
+                border-radius: 6px;
+                padding: 8px 12px;
+                font-size: 14px;
+                font-weight: bold;
+                text-align: center;
+            }}
+            
+            #searchIcon {{
+                color: #666;
+                font-size: 16px;
+                padding: 5px;
+            }}
+            
+            #usersSearch {{
+                background-color: white;
+                border: 1px solid #E0E0E0;
+                border-radius: 6px;
+                padding: 8px 10px;
+                font-size: 13px;
+            }}
+            
+            #usersSearch:focus {{
+                border-color: {self.colors['accent']};
+                outline: none;
+            }}
+            
+            #usersScroll {{
+                background-color: transparent;
+                border: none;
+            }}
+            
+            #usersList {{
+                background-color: transparent;
+            }}
+            
+            #userFrame {{
+                background-color: #F8F9FA;
+                border: 1px solid #E0E0E0;
+                border-radius: 6px;
+                margin: 2px 0px;
+                padding: 2px;
+            }}
+            
+            #userFrame:hover {{
+                background-color: #E3F2FD;
+                border-color: {self.colors['accent']};
+            }}
+            
+            #userInfo {{
+                color: {self.colors['text_primary']};
+                font-size: 12px;
+                margin: 0px;
+            }}
+            
+            #privateInfo {{
+                color: {self.colors['text_secondary']};
+                font-size: 12px;
+                font-style: italic;
+                margin: 10px 0px;
+                padding: 10px;
+                background-color: #F0F8FF;
+                border-radius: 6px;
+                border: 1px solid #E3F2FD;
+            }}
+            
+            /* Add Product Page Styles */
+            #formContainer {{
+                background-color: white;
+                border: 1px solid {self.colors['light']};
+                border-radius: 15px;
+                margin: 10px 0px;
+                box-shadow: 0 4px 12px rgba(33, 150, 243, 0.1);
+            }}
+            
+            #sectionTitle {{
+                color: {self.colors['primary']};
+                font-size: 16px;
+                font-weight: bold;
+                margin: 20px 0px 10px 0px;
+                padding-bottom: 5px;
+                border-bottom: 2px solid {self.colors['accent']};
+            }}
+            
+            #addFormField {{
+                background-color: white;
+                border: 2px solid {self.colors['light']};
+                border-radius: 8px;
+                padding: 12px 15px;
+                font-size: 14px;
+                min-height: 20px;
+                font-family: 'Segoe UI', Arial, sans-serif;
+            }}
+            
+            #addFormField:focus {{
+                border-color: {self.colors['accent']};
+                background-color: #FAFAFA;
+                outline: none;
+            }}
+            
+            #backButton {{
+                background-color: {self.colors['text_secondary']};
+                color: white;
+                border: none;
+                border-radius: 8px;
+                padding: 10px 20px;
+                font-size: 14px;
+                font-weight: bold;
+                min-width: 140px;
+            }}
+            
+            #backButton:hover {{
+                background-color: #5a6268;
+            }}
+            
+            #browseButton {{
+                background-color: {self.colors['accent']};
+                color: white;
+                border: none;
+                border-radius: 8px;
+                padding: 12px 20px;
+                font-size: 14px;
+                font-weight: bold;
+                min-width: 100px;
+            }}
+            
+            #browseButton:hover {{
+                background-color: {self.colors['primary']};
+            }}
+            
+            #clearButton {{
+                background-color: {self.colors['warning']};
+                color: white;
+                border: none;
+                border-radius: 8px;
+                padding: 12px 24px;
+                font-size: 14px;
+                font-weight: bold;
+                min-width: 120px;
+            }}
+            
+            #clearButton:hover {{
+                background-color: #e68900;
+            }}
+            
+            #cancelButton {{
+                background-color: {self.colors['error']};
+                color: white;
+                border: none;
+                border-radius: 8px;
+                padding: 12px 24px;
+                font-size: 14px;
+                font-weight: bold;
+                min-width: 100px;
+            }}
+            
+            #cancelButton:hover {{
+                background-color: #D32F2F;
+            }}
+            
+            #saveButton {{
+                background-color: {self.colors['success']};
+                color: white;
+                border: none;
+                border-radius: 8px;
+                padding: 12px 24px;
+                font-size: 14px;
+                font-weight: bold;
+                min-width: 140px;
+            }}
+            
+            #saveButton:hover {{
+                background-color: #45a049;
+            }}
+            
+            #noteLabel {{
+                color: {self.colors['error']};
+                font-size: 12px;
+                font-style: italic;
+                margin: 10px 0px;
+            }}
+            
+            #upload_another_btn {{
+                background-color: #f0f0f0;
+                color: #4CC9F0;
+                border: 1px solid #4CC9F0;
+                border-radius: 4px;
+                font-size: 12px;
+                padding: 4px 8px;
+            }}
+            
+            #upload_another_btn:hover {{
+                background-color: #e0f7fa;
+            }}
+            
+            QFormLayout QLabel {{
+                color: {self.colors['text_primary']};
+                font-size: 14px;
+                font-weight: bold;
+                margin-bottom: 5px;
+                padding: 5px 0px;
+            }}
+            
+            /* Calendar popup styling - black font color */
+            QCalendarWidget {{
+                background-color: white;
+                color: black !important;
+                font-size: 14px;
+            }}
+            
+            QCalendarWidget QAbstractItemView {{
+                color: black !important;
+                background-color: white;
+                selection-background-color: {self.colors['accent']};
+                selection-color: white;
+                font-size: 14px;
+            }}
+            
+            QCalendarWidget QWidget {{
+                color: black !important;
+                background-color: white;
+                font-size: 14px;
+            }}
+            
+            QCalendarWidget QTableView {{
+                color: black !important;
+                background-color: white;
+                gridline-color: #e0e0e0;
+                font-size: 14px;
+                font-weight: bold;
+            }}
+            
+            QCalendarWidget QTableView::item {{
+                color: black !important;
+                background-color: white;
+                padding: 5px;
+                border: none;
+                font-size: 14px;
+                font-weight: bold;
+            }}
+            
+            QCalendarWidget QTableView::item:selected {{
+                background-color: {self.colors['accent']};
+                color: white !important;
+                font-weight: bold;
+            }}
+            
+            QCalendarWidget QTableView::item:hover {{
+                background-color: {self.colors['light']};
+                color: black !important;
+                font-weight: bold;
+            }}
+            
+            QCalendarWidget QHeaderView::section {{
+                background-color: {self.colors['light']};
+                color: black !important;
+                padding: 5px;
+                border: 1px solid #e0e0e0;
+                font-weight: bold;
+                font-size: 12px;
+            }}
+            
+            QCalendarWidget QToolButton {{
+                color: black !important;
+                background-color: white;
+                border: 1px solid #ced4da;
+                border-radius: 4px;
+                font-size: 14px;
+                padding: 5px;
+                font-weight: bold;
+            }}
+            
+            QCalendarWidget QToolButton:hover {{
+                background-color: {self.colors['light']};
+                color: black !important;
+            }}
+            
+            QCalendarWidget QSpinBox {{
+                color: black !important;
+                background-color: white;
+                font-size: 14px;
+                font-weight: bold;
+                border: 1px solid #ced4da;
+            }}
+            
+            QCalendarWidget #qt_calendar_navigationbar {{
+                background-color: {self.colors['primary']};
+                color: white;
+            }}
+            
+            QCalendarWidget #qt_calendar_monthbutton {{
+                color: white;
+                font-weight: bold;
+                font-size: 16px;
+            }}
+            
+            QCalendarWidget #qt_calendar_yearbutton {{
+                color: white;
+                font-weight: bold;
+                font-size: 16px;
+            }}
+            
+            QCalendarWidget #qt_calendar_prevmonth {{
+                color: white;
+                font-size: 16px;
+            }}
+            
+            QCalendarWidget #qt_calendar_nextmonth {{
+                color: white;
+                font-size: 16px;
+            }}
+        """)
+
+class OwnerProductConfirmationDialog(QDialog):
+    """Product confirmation dialog for owner dashboard"""
+    def __init__(self, name, desc, image_path, batch, m_date, e_date, a_date, sku, location, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Confirm Product Details")
+        self.resize(600, 700)
+        self.setStyleSheet("""
+            QDialog {
+                background-color: #f3f3fe;
+                font-family: "Segoe UI", Arial, sans-serif;
+            }
+            QLabel {
+                color: #333;
+            }
+            QLabel#titleLabel {
+                font-size: 22px;
+                font-weight: bold;
+                color: #0504AA;
+                margin-bottom: 15px;
+            }
+            QLabel#headingLabel {
+                font-size: 16px;
+                font-weight: bold;
+                color: #4CC9F0;
+                margin-top: 10px;
+            }
+            QLabel#valueLabel {
+                font-size: 14px;
+                color: #333;
+                margin-left: 5px;
+            }
+            QLabel#boldValueLabel {
+                font-size: 14px;
+                font-weight: bold;
+                color: #333;
+                margin-left: 5px;
+            }
+            QPushButton#submitBtn {
+                background-color: #0504AA;
+                color: white;
+                border: none;
+                border-radius: 6px;
+                padding: 12px 20px;
+                font-size: 16px;
+                font-weight: bold;
+            }
+            QPushButton#submitBtn:hover {
+                background-color: #4CC9F0;
+            }
+            QPushButton#cancelBtn {
+                background-color: #f0f0f0;
+                color: #333;
+                border: 1px solid #ccc;
+                border-radius: 6px;
+                padding: 12px 20px;
+                font-size: 16px;
+            }
+            QPushButton#cancelBtn:hover {
+                background-color: #e0e0e0;
+            }
+            QFrame#line {
+                background-color: #e0e0e0;
+                max-height: 1px;
+            }
+        """)
+        
+        # Save the data for later use
+        self.name = name
+        self.desc = desc
+        self.image_path = image_path
+        self.batch = batch
+        
+        # Create the layout
+        layout = QVBoxLayout(self)
+        layout.setSpacing(20)
+        layout.setContentsMargins(30, 30, 30, 30)
+        
+        # Title
+        title_label = QLabel("Review Product Information")
+        title_label.setObjectName("titleLabel")
+        title_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(title_label)
+        
+        # Add a separator line
+        separator = QFrame()
+        separator.setFrameShape(QFrame.HLine)
+        separator.setFrameShadow(QFrame.Sunken)
+        separator.setObjectName("line")
+        layout.addWidget(separator)
+        
+        # Content area (product image and details)
+        content_layout = QHBoxLayout()
+        
+        # Left side - Product Image (if available)
+        if image_path and os.path.exists(image_path):
+            images_layout = QVBoxLayout()
+            images_layout.setSpacing(15)
+            
+            # Product image
+            product_image_label = QLabel("Product Image:")
+            product_image_label.setObjectName("headingLabel")
+            images_layout.addWidget(product_image_label)
+            
+            self.product_image = QLabel()
+            self.product_image.setFixedSize(200, 200)
+            self.product_image.setStyleSheet("border: 1px solid #ccc; background-color: white;")
+            self.product_image.setAlignment(Qt.AlignCenter)
+            
+            # Load image
+            pixmap = QPixmap(image_path)
+            scaled_pixmap = pixmap.scaled(190, 190, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            self.product_image.setPixmap(scaled_pixmap)
+                
+            images_layout.addWidget(self.product_image, alignment=Qt.AlignCenter)
+            images_layout.addStretch()
+            
+            content_layout.addLayout(images_layout)
+        
+        # Right side - Product details
+        details_layout = QVBoxLayout()
+        details_layout.setSpacing(10)
+        
+        # Product name (bold)
+        name_label = QLabel("Product Name:")
+        name_label.setObjectName("headingLabel")
+        details_layout.addWidget(name_label)
+        name_value = QLabel(name)
+        name_value.setObjectName("boldValueLabel")
+        name_value.setWordWrap(True)
+        details_layout.addWidget(name_value)
+        
+        # Description
+        desc_label = QLabel("Description:")
+        desc_label.setObjectName("headingLabel")
+        details_layout.addWidget(desc_label)
+        desc_value = QLabel(desc)
+        desc_value.setObjectName("valueLabel")
+        desc_value.setWordWrap(True)
+        details_layout.addWidget(desc_value)
+        
+        # Batch number
+        batch_label = QLabel("Batch Number:")
+        batch_label.setObjectName("headingLabel")
+        details_layout.addWidget(batch_label)
+        batch_value = QLabel(batch)
+        batch_value.setObjectName("valueLabel")
+        details_layout.addWidget(batch_value)
+        
+        # Dates (bold)
+        dates_label = QLabel("Dates:")
+        dates_label.setObjectName("headingLabel")
+        details_layout.addWidget(dates_label)
+        dates_value = QLabel(f"Manufacture: {m_date}\nBest Before: {e_date}\nArrival: {a_date}")
+        dates_value.setObjectName("boldValueLabel")
+        details_layout.addWidget(dates_value)
+        
+        # Location
+        location_label = QLabel("Storage Location:")
+        location_label.setObjectName("headingLabel")
+        details_layout.addWidget(location_label)
+        location_value = QLabel(location if location else "Not specified")
+        location_value.setObjectName("valueLabel")
+        details_layout.addWidget(location_value)
+        
+        # SKU
+        sku_label = QLabel("SKU:")
+        sku_label.setObjectName("headingLabel")
+        details_layout.addWidget(sku_label)
+        sku_value = QLabel(sku if sku else "Not specified")
+        sku_value.setObjectName("valueLabel")
+        details_layout.addWidget(sku_value)
+        
+        content_layout.addLayout(details_layout)
+        layout.addLayout(content_layout)
+        
+        # Add another separator line
+        separator2 = QFrame()
+        separator2.setFrameShape(QFrame.HLine)
+        separator2.setFrameShadow(QFrame.Sunken)
+        separator2.setObjectName("line")
+        layout.addWidget(separator2)
+        
+        # Buttons
+        button_layout = QHBoxLayout()
+        
+        self.cancel_btn = QPushButton("Cancel")
+        self.cancel_btn.setObjectName("cancelBtn")
+        self.cancel_btn.clicked.connect(self.reject)
+        
+        self.submit_btn = QPushButton("Submit to Admin")
+        self.submit_btn.setObjectName("submitBtn")
+        self.submit_btn.clicked.connect(self.accept)
+        
+        button_layout.addWidget(self.cancel_btn)
+        button_layout.addStretch()
+        button_layout.addWidget(self.submit_btn)
+        
+        layout.addLayout(button_layout)
+
+
+class ProductDetailsDialog(QDialog):
+    def __init__(self, parent, product_id):
+        super().__init__(parent)
+        self.product_id = product_id
+        self.setWindowTitle("Product Details")
+        self.setFixedSize(800, 650)  # Specified dimensions
+        self.setModal(True)
+        
+        # Set 14px font for the entire dialog
+        font = QFont()
+        font.setPointSize(14)
+        self.setFont(font)
+        
+        self.setupUI()
+        self.loadProductData()
+    
+    def setupUI(self):
+        layout = QVBoxLayout()
+        layout.setContentsMargins(30, 30, 30, 30)
+        layout.setSpacing(20)
+        
+        # Title
+        title_label = QLabel("Product Details")
+        title_label.setStyleSheet("font-size: 18px; font-weight: bold; color: #2196F3; margin-bottom: 10px;")
+        title_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(title_label)
+        
+        # Scroll area for content
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setStyleSheet("QScrollArea { border: none; background-color: transparent; }")
+        
+        # Content widget
+        content_widget = QWidget()
+        content_layout = QVBoxLayout()
+        content_layout.setSpacing(15)
+        
+        # Details frame
+        details_frame = QFrame()
+        details_frame.setStyleSheet("QFrame { background-color: #f8f9fa; border-radius: 10px; padding: 20px; }")
+        details_layout = QVBoxLayout()
+        details_layout.setSpacing(15)
+        
+        # Product Image placeholder
+        self.image_label = QLabel()
+        self.image_label.setAlignment(Qt.AlignCenter)
+        self.image_label.setFixedHeight(150)
+        self.image_label.setStyleSheet("QLabel { background-color: #e9ecef; border-radius: 8px; border: 2px dashed #6c757d; }")
+        details_layout.addWidget(self.image_label)
+        
+        # Create info fields
+        self.product_name_label = self.create_info_field("Product Name:", "")
+        self.product_id_label = self.create_info_field("Product ID:", "")
+        self.barcode_label = self.create_info_field("Barcode:", "")
+        self.sku_label = self.create_info_field("SKU:", "")
+        self.batch_label = self.create_info_field("Batch Number:", "")
+        self.location_label = self.create_info_field("Storage Location:", "")
+        self.manufacture_date_label = self.create_info_field("Manufacture Date:", "")
+        self.expiry_date_label = self.create_info_field("Expiry Date:", "")
+        self.arrival_date_label = self.create_info_field("Arrival Date:", "")
+        
+        # Add all fields to layout
+        for field in [self.product_name_label, self.product_id_label, self.barcode_label, 
+                     self.sku_label, self.batch_label, self.location_label,
+                     self.manufacture_date_label, self.expiry_date_label, self.arrival_date_label]:
+            details_layout.addWidget(field)
+        
+        details_frame.setLayout(details_layout)
+        content_layout.addWidget(details_frame)
+        
+        content_widget.setLayout(content_layout)
+        scroll_area.setWidget(content_widget)
+        layout.addWidget(scroll_area)
+        
+        # Close button
+        button_layout = QHBoxLayout()
+        close_btn = QPushButton("Close")
+        close_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #6c757d;
+                color: white;
+                border: none;
+                padding: 12px 30px;
+                border-radius: 5px;
+                font-size: 14px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #5a6268;
+            }
+        """)
+        close_btn.clicked.connect(self.accept)
+        
+        button_layout.addStretch()
+        button_layout.addWidget(close_btn)
+        button_layout.addStretch()
+        
+        layout.addLayout(button_layout)
+        self.setLayout(layout)
+    
+    def create_info_field(self, label_text, value_text):
+        """Create a styled info field"""
+        container = QFrame()
+        container.setStyleSheet("QFrame { background-color: white; border-radius: 5px; padding: 10px; }")
+        
+        layout = QVBoxLayout()
+        layout.setSpacing(5)
+        
+        label = QLabel(label_text)
+        label.setStyleSheet("font-size: 14px; font-weight: bold; color: #495057;")
+        
+        value = QLabel(value_text)
+        value.setStyleSheet("font-size: 14px; color: #212529;")
+        value.setWordWrap(True)
+        
+        layout.addWidget(label)
+        layout.addWidget(value)
+        
+        container.setLayout(layout)
+        container.value_label = value  # Store reference for updating
+        
+        return container
+    
+    def loadProductData(self):
+        """Load product data from database"""
+        try:
+            conn = sqlite3.connect("testing_system.db")
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                SELECT p.product_id, p.product_name, p.product_image, 
+                       COALESCE(r.rack_location_name, 'No Location') as rack_location_name,
+                       p.sku, p.manufacture_date, p.expired_date, p.barcode,
+                       p.arrival_date, p.batch
+                FROM products p
+                LEFT JOIN racklocations r ON p.rack_location_id = r.rack_location_id
+                WHERE p.product_id = ?
+            """, (self.product_id,))
+            
+            product = cursor.fetchone()
+            conn.close()
+            
+            if product:
+                product_id, product_name, product_image, rack_location, sku, manufacture_date, expired_date, barcode, arrival_date, batch = product
+                
+                # Update fields
+                self.product_name_label.value_label.setText(product_name or 'N/A')
+                self.product_id_label.value_label.setText(str(product_id))
+                self.barcode_label.value_label.setText(barcode or 'N/A')
+                self.sku_label.value_label.setText(str(sku) if sku else 'N/A')
+                self.batch_label.value_label.setText(batch or 'N/A')
+                self.location_label.value_label.setText(rack_location)
+                self.manufacture_date_label.value_label.setText(manufacture_date[:10] if manufacture_date else 'N/A')
+                self.expiry_date_label.value_label.setText(expired_date[:10] if expired_date else 'N/A')
+                self.arrival_date_label.value_label.setText(arrival_date[:10] if arrival_date else 'N/A')
+                
+                # Handle product image
+                if product_image and product_image.strip():
+                    try:
+                        pixmap = QPixmap(product_image)
+                        if not pixmap.isNull():
+                            scaled_pixmap = pixmap.scaled(140, 140, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                            self.image_label.setPixmap(scaled_pixmap)
+                            self.image_label.setStyleSheet("QLabel { background-color: #e9ecef; border-radius: 8px; border: 1px solid #dee2e6; }")
+                        else:
+                            self.set_placeholder_image()
+                    except:
+                        self.set_placeholder_image()
+                else:
+                    self.set_placeholder_image()
+            else:
+                QMessageBox.warning(self, "Error", "Product not found!")
+                self.reject()
+                
+        except sqlite3.Error as e:
+            QMessageBox.warning(self, "Database Error", f"Error loading product: {str(e)}")
+            self.reject()
+    
+    def set_placeholder_image(self):
+        """Set placeholder image"""
+        self.image_label.setText("📦\nNo Image")
+        self.image_label.setStyleSheet("""
+            QLabel { 
+                background-color: #e9ecef; 
+                border-radius: 8px; 
+                border: 2px dashed #6c757d;
+                font-size: 24px;
+                color: #6c757d;
+            }
+        """)
+
+
+class ProductDialog(QDialog):
+    def __init__(self, parent, title, product_id=None):
+        super().__init__(parent)
+        self.parent = parent
+        self.product_id = product_id
+        self.setWindowTitle(title)
+        self.setFixedSize(800, 650)  # Updated dimensions as requested
+        self.setModal(True)
+        
+        # Set 14px font for the entire dialog
+        font = QFont()
+        font.setPointSize(14)
+        self.setFont(font)
+        
+        self.setupUI()
+        
+        if product_id:
+            self.loadProductData()
+    
+    def setupUI(self):
+        layout = QVBoxLayout()
+        layout.setContentsMargins(30, 30, 30, 30)
+        layout.setSpacing(20)
+        
+        # Title
+        title_label = QLabel("Edit Product Information")
+        title_label.setStyleSheet("font-size: 18px; font-weight: bold; color: #2196F3; margin-bottom: 10px;")
+        title_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(title_label)
+        
+        # Form section
+        form_frame = QFrame()
+        form_frame.setStyleSheet("QFrame { background-color: #f8f9fa; border-radius: 10px; padding: 20px; }")
+        form_layout = QVBoxLayout()
+        form_layout.setSpacing(15)
+        
+        # Product Name
+        name_layout = QVBoxLayout()
+        name_label = QLabel("Product Name:")
+        name_label.setStyleSheet("font-size: 14px; font-weight: bold; color: #333;")
+        self.product_name = QLineEdit()
+        self.product_name.setStyleSheet("QLineEdit { padding: 8px; border: 2px solid #ddd; border-radius: 5px; font-size: 14px; }")
+        name_layout.addWidget(name_label)
+        name_layout.addWidget(self.product_name)
+        form_layout.addLayout(name_layout)
+        
+        # Batch Number
+        batch_layout = QVBoxLayout()
+        batch_label = QLabel("Batch Number:")
+        batch_label.setStyleSheet("font-size: 14px; font-weight: bold; color: #333;")
+        self.batch = QLineEdit()
+        self.batch.setStyleSheet("QLineEdit { padding: 8px; border: 2px solid #ddd; border-radius: 5px; font-size: 14px; }")
+        batch_layout.addWidget(batch_label)
+        batch_layout.addWidget(self.batch)
+        form_layout.addLayout(batch_layout)
+        
+        # SKU
+        sku_layout = QVBoxLayout()
+        sku_label = QLabel("SKU:")
+        sku_label.setStyleSheet("font-size: 14px; font-weight: bold; color: #333;")
+        self.sku = QSpinBox()
+        self.sku.setMaximum(999999)
+        self.sku.setMinimum(1)
+        self.sku.setStyleSheet("QSpinBox { padding: 8px; border: 2px solid #ddd; border-radius: 5px; font-size: 14px; }")
+        sku_layout.addWidget(sku_label)
+        sku_layout.addWidget(self.sku)
+        form_layout.addLayout(sku_layout)
+        
+        # Manufacture Date
+        mfg_layout = QVBoxLayout()
+        mfg_label = QLabel("Manufacture Date:")
+        mfg_label.setStyleSheet("font-size: 14px; font-weight: bold; color: #333;")
+        self.manufacture_date = QDateEdit()
+        self.manufacture_date.setDate(QDate.currentDate())
+        self.manufacture_date.setCalendarPopup(True)
+        self.manufacture_date.setStyleSheet("QDateEdit { padding: 8px; border: 2px solid #ddd; border-radius: 5px; font-size: 14px; }")
+        mfg_layout.addWidget(mfg_label)
+        mfg_layout.addWidget(self.manufacture_date)
+        form_layout.addLayout(mfg_layout)
+        
+        # Expiry Date
+        exp_layout = QVBoxLayout()
+        exp_label = QLabel("Expiry Date:")
+        exp_label.setStyleSheet("font-size: 14px; font-weight: bold; color: #333;")
+        self.expiry_date = QDateEdit()
+        self.expiry_date.setDate(QDate.currentDate().addDays(30))
+        self.expiry_date.setCalendarPopup(True)
+        self.expiry_date.setStyleSheet("QDateEdit { padding: 8px; border: 2px solid #ddd; border-radius: 5px; font-size: 14px; }")
+        exp_layout.addWidget(exp_label)
+        exp_layout.addWidget(self.expiry_date)
+        form_layout.addLayout(exp_layout)
+        
+        form_frame.setLayout(form_layout)
+        layout.addWidget(form_frame)
+        
+        # Add stretch to push buttons to bottom
+        layout.addStretch()
+        
+        # Buttons
+        button_layout = QHBoxLayout()
+        
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #6c757d;
+                color: white;
+                border: none;
+                padding: 12px 30px;
+                border-radius: 5px;
+                font-size: 14px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #5a6268;
+            }
+        """)
+        cancel_btn.clicked.connect(self.reject)
+        
+        save_btn = QPushButton("Save Changes")
+        save_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #2196F3;
+                color: white;
+                border: none;
+                padding: 12px 30px;
+                border-radius: 5px;
+                font-size: 14px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #1976D2;
+            }
+        """)
+        save_btn.clicked.connect(self.accept)
+        
+        button_layout.addWidget(cancel_btn)
+        button_layout.addStretch()
+        button_layout.addWidget(save_btn)
+        
+        layout.addLayout(button_layout)
+        
+        self.setLayout(layout)
+    
+    def loadProductData(self):
+        """Load existing product data for editing"""
+        try:
+            conn = sqlite3.connect("testing_system.db")
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                SELECT product_name, batch, sku, manufacture_date, expired_date 
+                FROM products 
+                WHERE product_id = ?
+            """, (self.product_id,))
+            
+            product = cursor.fetchone()
+            if product:
+                self.product_name.setText(product[0] or "")
+                self.batch.setText(product[1] or "")
+                self.sku.setValue(product[2] or 1)
+                if product[3]:
+                    self.manufacture_date.setDate(QDate.fromString(product[3][:10], "yyyy-MM-dd"))
+                if product[4]:
+                    self.expiry_date.setDate(QDate.fromString(product[4][:10], "yyyy-MM-dd"))
+            
+            conn.close()
+            
+        except sqlite3.Error as e:
+            QMessageBox.warning(self, "Database Error", f"Error loading product: {str(e)}")
+    
+    def accept(self):
+        """Save product data"""
+        if not self.product_name.text().strip():
+            QMessageBox.warning(self, "Validation Error", "Product name is required!")
+            return
+        
+        try:
+            conn = sqlite3.connect("testing_system.db")
+            cursor = conn.cursor()
+            
+            manufacture_date_str = self.manufacture_date.date().toString("yyyy-MM-dd")
+            expiry_date_str = self.expiry_date.date().toString("yyyy-MM-dd")
+            arrival_date_str = QDate.currentDate().toString("yyyy-MM-dd")
+            
+            if self.product_id:
+                # Update existing product
+                cursor.execute("""
+                    UPDATE products 
+                    SET product_name = ?, batch = ?, sku = ?, 
+                        manufacture_date = ?, expired_date = ?
+                    WHERE product_id = ?
+                """, (
+                    self.product_name.text(),
+                    self.batch.text(),
+                    self.sku.value(),
+                    manufacture_date_str,
+                    expiry_date_str,
+                    self.product_id
+                ))
+            else:
+                # Add new product
+                cursor.execute("""
+                    INSERT INTO products (owner_id, product_name, batch, sku, 
+                                        manufacture_date, expired_date, arrival_date)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    self.parent.user_info['user_id'],
+                    self.product_name.text(),
+                    self.batch.text(),
+                    self.sku.value(),
+                    manufacture_date_str,
+                    expiry_date_str,
+                    arrival_date_str
+                ))
+            
+            conn.commit()
+            conn.close()
+            
+            super().accept()
+            
+        except sqlite3.Error as e:
+            QMessageBox.warning(self, "Database Error", f"Error saving product: {str(e)}")
+
+def main():
+    app = QApplication(sys.argv)
+    
+    # Sample user info for testing
+    user_info = {
+        'user_id': 1,
+        'username': 'owner1',
+        'fullname': 'John Doe',
+        'email': 'john.doe@example.com',
+        'role_name': 'Owner'
+    }
+    
+    window = OwnerDashboard(user_info)
+    window.show()
+    window.showMaximized()  # Ensure full window mode
+    
+    sys.exit(app.exec_())
+
+if __name__ == "__main__":
+    main() 
