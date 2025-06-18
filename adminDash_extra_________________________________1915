@@ -1,0 +1,2188 @@
+import sys
+import sqlite3
+import os
+import random
+import time
+from datetime import datetime, timedelta
+from PyQt5.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QGridLayout, QLabel, QLineEdit, QPushButton, QComboBox, QDateEdit,
+    QTableWidget, QTableWidgetItem, QScrollArea, QFrame, QDialog,
+    QFormLayout, QMessageBox, QTextEdit, QHeaderView, QSplitter,
+    QTabWidget, QProgressBar, QGroupBox, QCheckBox, QSpinBox, QButtonGroup,
+    QStackedWidget, QProgressDialog, QRadioButton, QFileDialog, QListWidget, QListWidgetItem, QSizePolicy
+)
+from PyQt5.QtCore import Qt, QTimer, QDate, pyqtSignal, QDateTime
+from PyQt5.QtGui import QFont, QPalette, QColor, QIcon, QPixmap
+import re
+from datetime import timezone, timedelta
+
+# Malaysia timezone (UTC+8)
+MALAYSIA_TZ = timezone(timedelta(hours=8))
+
+# Chat database functions
+def verify_user_login(cursor, username, password):
+    """Verify user login credentials"""
+    cursor.execute("""
+        SELECT u.user_id, u.username, r.role_name, u.email, u.phone_no, 
+               b.branch_name, u.branch_id, r.role_id, u.fullname
+        FROM users u
+        LEFT JOIN roles r ON u.role = r.role_id
+        LEFT JOIN branches b ON u.branch_id = b.branch_id
+        WHERE u.username = ? AND u.password = ?
+    """, (username, password))
+
+    result = cursor.fetchone()
+    if result:
+        return {
+            'user_id': result[0],
+            'username': result[1],
+            'role_name': result[2],
+            'email': result[3],
+            'phone_no': result[4],
+            'branch_name': result[5],
+            'branch_id': result[6],
+            'role_id': result[7],
+            'fullname': result[8]
+        }
+    return None
+
+
+def get_all_messages(cursor, include_deleted=False):
+    """Get all messages from the message table"""
+    cursor.execute("""
+        SELECT username, role, message, timestamp, message_id
+        FROM message
+        WHERE role IN ('admin', 'superadmin') 
+        AND message NOT LIKE '[ACTIVITY]%'
+        ORDER BY timestamp ASC
+    """)
+    return cursor.fetchall()
+
+
+def insert_message(cursor, user_id, username, role, role_id, message_text):
+    """Insert a new message into the message table"""
+    cursor.execute("""
+        INSERT INTO message (user_id, role_id, username, role, message, timestamp)
+        VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+    """, (user_id, role_id, username, role, message_text))
+
+
+def get_all_users_for_chat(cursor, current_username):
+    """Get all users for chat user list"""
+    cursor.execute("""
+        SELECT u.username, r.role_name, u.fullname 
+        FROM users u 
+        JOIN roles r ON u.role = r.role_id 
+        WHERE u.username != ?
+        ORDER BY r.role_name, u.username
+    """, (current_username,))
+    return cursor.fetchall()
+
+
+def get_private_messages(cursor, sender_username, receiver_username):
+    """Get private messages between two users"""
+    cursor.execute("""
+        SELECT sender_username, receiver_username, message_text, timestamp, sender_role
+        FROM private_messages 
+        WHERE (sender_username = ? AND receiver_username = ?) 
+           OR (sender_username = ? AND receiver_username = ?)
+        ORDER BY timestamp ASC
+        LIMIT 20
+    """, (sender_username, receiver_username, receiver_username, sender_username))
+    return cursor.fetchall()
+
+
+def insert_private_message(cursor, sender_user_id, sender_username, receiver_username, sender_role, message_text):
+    """Insert a private message"""
+    cursor.execute("""
+        INSERT INTO private_messages 
+        (sender_user_id, sender_username, receiver_username, sender_role, message_text)
+        VALUES (?, ?, ?, ?, ?)
+    """, (sender_user_id, sender_username, receiver_username, sender_role, message_text))
+
+
+def format_malaysia_time(timestamp_str=None):
+    """Format timestamp to Malaysia time"""
+    try:
+        if timestamp_str:
+            if 'T' in timestamp_str or '-' in timestamp_str:
+                dt = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
+            else:
+                try:
+                    dt = datetime.strptime(timestamp_str, "%Y-%m-%d %H:%M:%S")
+                    dt = dt.replace(tzinfo=MALAYSIA_TZ)
+                except:
+                    dt = datetime.now(MALAYSIA_TZ)
+        else:
+            dt = datetime.now(MALAYSIA_TZ)
+
+        return dt.strftime("%Y-%m-%d %H:%M:%S")
+    except:
+        return datetime.now(MALAYSIA_TZ).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def create_chat_tables(cursor):
+    """Create necessary chat tables"""
+    # Message table
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS message (
+            message_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            role_id INTEGER,
+            username TEXT,
+            role TEXT,
+            message TEXT,
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    # Private messages table
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS private_messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            sender_user_id INTEGER,
+            sender_username TEXT,
+            receiver_username TEXT,
+            sender_role TEXT,
+            message_text TEXT,
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+
+# Note: CreateAccountDialog will be imported dynamically to avoid circular imports
+CreateAccountDialog = None
+
+
+class SuperAdminDialog(QDialog):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Super Admin Access")
+        self.setFixedSize(400, 200)
+        self.setStyleSheet("""
+            QDialog {
+                background-color: #f5f5f0;
+            }
+            QLabel {
+                font-size: 14px;
+                font-weight: bold;
+                color: #1B5E20;
+            }
+            QLineEdit {
+                border: 2px solid #388E3C;
+                border-radius: 20px;
+                padding: 12px;
+                font-size: 14px;
+                background-color: white;
+            }
+            QPushButton {
+                background-color: #388E3C;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 12px 24px;
+                font-weight: bold;
+                font-size: 14px;
+            }
+            QPushButton:hover {
+                background-color: #2E7D32;
+            }
+            QPushButton:pressed {
+                background-color: #1B5E20;
+            }
+        """)
+
+        layout = QVBoxLayout()
+        layout.setContentsMargins(30, 30, 30, 30)
+        layout.setSpacing(15)
+
+        title_label = QLabel("Super Admin Access")
+        title_label.setFont(QFont("Arial", 16, QFont.Bold))
+        title_label.setAlignment(Qt.AlignCenter)
+        title_label.setStyleSheet("color: #1B5E20; margin-bottom: 10px;")
+
+        self.passcode_input = QLineEdit()
+        self.passcode_input.setEchoMode(QLineEdit.Password)
+        self.passcode_input.setPlaceholderText("Enter Super Admin Passcode")
+        self.passcode_input.setMinimumHeight(45)
+
+        self.confirm_button = QPushButton("Confirm Access")
+        self.confirm_button.clicked.connect(self.check_passcode)
+        self.confirm_button.setMinimumHeight(45)
+
+        layout.addWidget(title_label)
+        layout.addWidget(QLabel("Please enter your passcode to access Super Admin features:"))
+        layout.addWidget(self.passcode_input)
+        layout.addWidget(self.confirm_button)
+
+        self.setLayout(layout)
+
+    def check_passcode(self):
+        # Simple passcode check - in real app, this should be more secure
+        if self.passcode_input.text() == "123456":
+            self.accept()
+        else:
+            QMessageBox.warning(self, "Access Denied", "Invalid passcode!")
+
+
+class SummaryCard(QFrame):
+    def __init__(self, title, value, subtitle="", color="#4CAF50"):
+        super().__init__()
+        self.setFrameStyle(QFrame.Box)
+        self.setStyleSheet(f"""
+            QFrame {{
+                background-color: white;
+                border: 2px solid {color};
+                border-radius: 10px;
+                padding: 10px;
+            }}
+            QLabel {{
+                border: none;
+            }}
+        """)
+
+        layout = QVBoxLayout()
+
+        title_label = QLabel(title)
+        title_label.setFont(QFont("Arial", 12, QFont.Bold))
+        title_label.setStyleSheet(f"color: {color};")
+
+        value_label = QLabel(str(value))
+        value_label.setFont(QFont("Arial", 24, QFont.Bold))
+        value_label.setStyleSheet(f"color: {color};")
+        value_label.setAlignment(Qt.AlignCenter)
+
+        if subtitle:
+            subtitle_label = QLabel(subtitle)
+            subtitle_label.setFont(QFont("Arial", 10))
+            subtitle_label.setStyleSheet("color: #666;")
+            subtitle_label.setAlignment(Qt.AlignCenter)
+            layout.addWidget(subtitle_label)
+
+        layout.addWidget(title_label)
+        layout.addWidget(value_label)
+
+        self.setLayout(layout)
+        self.setFixedHeight(120)
+
+
+class ProductCardWithCheckbox(QFrame):
+    def __init__(self, product_data, parent=None):
+        super().__init__(parent)
+        self.product_data = product_data
+        self.setMinimumSize(1450, 315)  # Slightly wider to accommodate checkbox
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+        self.setFrameStyle(QFrame.StyledPanel)
+
+        # Calculate days until expiration
+        days_left = product_data.get('days_left', 0)
+
+        # Set color based on urgency
+        if days_left <= 7:
+            border_color = "#F44336"  # Red - Very urgent
+            bg_color = "#FFEBEE"
+        elif days_left <= 15:
+            border_color = "#FF9800"  # Orange - Urgent
+            bg_color = "#FFF3E0"
+        elif days_left <= 30:
+            border_color = "#FFC107"  # Yellow - Warning
+            bg_color = "#FFFDE7"
+        else:
+            border_color = "#4CAF50"  # Green - Normal
+            bg_color = "#F1F8E9"
+
+        self.setStyleSheet(f"""
+            QFrame {{
+                background-color: {bg_color};
+                border: 2px solid {border_color};
+                border-radius: 12px;
+                margin: 10px;
+            }}
+            QFrame:hover {{
+                box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
+                transform: translateY(-2px);
+            }}
+        """)
+
+        self.init_ui()
+
+    def init_ui(self):
+        # Main horizontal layout - checkbox, image on left, details on right
+        main_layout = QHBoxLayout()
+        main_layout.setContentsMargins(20, 20, 20, 20)
+        main_layout.setSpacing(25)
+
+        # Left side - Checkbox
+        self.checkbox = QCheckBox()
+        self.checkbox.setFixedSize(20, 20)
+        self.checkbox.setStyleSheet("""
+            QCheckBox::indicator {
+                width: 18px;
+                height: 18px;
+                border: 2px solid #4CAF50;
+                border-radius: 3px;
+                background-color: white;
+            }
+            QCheckBox::indicator:checked {
+                background-color: #4CAF50;
+                image: url(data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMTIiIGhlaWdodD0iOSIgdmlld0JveD0iMCAwIDEyIDkiIGZpbGw9Im5vbmUiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+CjxwYXRoIGQ9Ik0xIDQuNUw0LjUgOEwxMSAxIiBzdHJva2U9IndoaXRlIiBzdHJva2Utd2lkdGg9IjIiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIvPgo8L3N2Zz4K);
+            }
+            QCheckBox::indicator:hover {
+                border-color: #45a049;
+            }
+        """)
+        main_layout.addWidget(self.checkbox, 0, Qt.AlignTop)
+
+        # Product image container
+        image_container = QFrame()
+        image_container.setFixedSize(250, 280)
+        image_container.setStyleSheet("""
+            QFrame {
+                background-color: transparent;
+                border: none;
+            }
+        """)
+
+        image_layout = QVBoxLayout(image_container)
+        image_layout.setContentsMargins(15, 15, 15, 15)
+        image_layout.setAlignment(Qt.AlignCenter)
+
+        # Product image
+        product_image = QLabel()
+        product_image.setFixedSize(220, 200)
+        product_image.setAlignment(Qt.AlignCenter)
+        product_image.setStyleSheet("""
+            QLabel {
+                background-color: transparent;
+                border: none;
+                border-radius: 0px;
+            }
+        """)
+
+        # Load product image if available
+        image_path = self.product_data.get('product_image', '')
+        if image_path and os.path.exists(image_path):
+            try:
+                pixmap = QPixmap(image_path)
+                if not pixmap.isNull():
+                    scaled_pixmap = pixmap.scaled(218, 198, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                    product_image.setPixmap(scaled_pixmap)
+                    product_image.setText("")
+                else:
+                    product_image.setText("No Image")
+                    product_image.setStyleSheet(product_image.styleSheet() + "color: #999; font-size: 12px;")
+            except:
+                product_image.setText("No Image")
+                product_image.setStyleSheet(product_image.styleSheet() + "color: #999; font-size: 12px;")
+        else:
+            product_image.setText("No Image")
+            product_image.setStyleSheet(product_image.styleSheet() + "color: #999; font-size: 12px;")
+
+        image_layout.addWidget(product_image)
+
+        # Barcode image (if available)
+        barcode_image_path = self.product_data.get('barcode_image', '')
+        if barcode_image_path and os.path.exists(barcode_image_path):
+            barcode_image = QLabel()
+            barcode_image.setFixedHeight(35)
+            barcode_image.setAlignment(Qt.AlignCenter)
+            try:
+                barcode_pixmap = QPixmap(barcode_image_path)
+                if not barcode_pixmap.isNull():
+                    scaled_barcode = barcode_pixmap.scaled(200, 33, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                    barcode_image.setPixmap(scaled_barcode)
+                    barcode_image.setStyleSheet(
+                        "background-color: white; border: 1px solid #DDD; border-radius: 3px; margin-top: 5px;")
+                    image_layout.addWidget(barcode_image)
+            except:
+                pass
+
+        main_layout.addWidget(image_container)
+
+        # Right side - Product details (same as original ProductCard)
+        details_container = QFrame()
+        details_layout = QVBoxLayout(details_container)
+        details_layout.setContentsMargins(0, 0, 0, 0)
+        details_layout.setSpacing(15)
+
+        # Product name (large, bold)
+        name_label = QLabel(self.product_data.get('product_name', 'Unknown Product'))
+        name_label.setFont(QFont("Arial", 18, QFont.Bold))
+        name_label.setStyleSheet("""
+            color: #002D04;
+            border: none;
+            padding: 0px;
+            margin: 0px;
+        """)
+        name_label.setAlignment(Qt.AlignCenter)
+        name_label.setWordWrap(True)
+        details_layout.addWidget(name_label)
+
+        # Product info grid
+        info_grid = QGridLayout()
+        info_grid.setHorizontalSpacing(20)
+        info_grid.setVerticalSpacing(4)
+
+        label_style = """
+            color: #000000;
+            border: none;
+            padding: 0px;
+            margin: 0px;
+        """
+        value_style = """
+            color: #333333;
+            border: none;
+            padding: 0px;
+            margin: 0px;
+        """
+
+        def make_label(text, bold=False, is_value=False):
+            label = QLabel(text)
+            font = QFont("Arial", 13)
+            if bold:
+                font.setBold(True)
+            label.setFont(font)
+            label.setStyleSheet(value_style if is_value else label_style)
+
+            if is_value:
+                label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+            else:
+                label.setAlignment(Qt.AlignCenter)
+            return label
+
+        # Row 1
+        info_grid.addWidget(make_label("Product ID:"), 0, 0)
+        info_grid.addWidget(make_label(str(self.product_data.get('product_id', 'N/A')), is_value=True), 0, 1)
+        info_grid.addWidget(make_label("Manufacture Date:"), 0, 2)
+        info_grid.addWidget(make_label(self.product_data.get('manufacture_date', 'N/A'), is_value=True), 0, 3)
+
+        # Row 2
+        info_grid.addWidget(make_label("Branch:"), 1, 0)
+        info_grid.addWidget(make_label(self.product_data.get('branch', 'Main Branch- Bayan Lepas'), is_value=True), 1,
+                            1)
+        info_grid.addWidget(make_label("Expiry Date:", bold=True), 1, 2)
+        info_grid.addWidget(make_label(self.product_data.get('expired_date', 'N/A'), is_value=True, bold=True), 1, 3)
+
+        # Row 3
+        info_grid.addWidget(make_label("SKU:"), 2, 0)
+        info_grid.addWidget(
+            make_label(str(self.product_data.get('sku', self.product_data.get('product_id', 'N/A'))), is_value=True), 2,
+            1)
+        info_grid.addWidget(make_label("Rack Location:"), 2, 2)
+        info_grid.addWidget(make_label(self.product_data.get('rack_location', 'Unassigned'), is_value=True), 2, 3)
+
+        # Row 4
+        info_grid.addWidget(make_label("Batch:"), 3, 0)
+        info_grid.addWidget(make_label(self.product_data.get('batch', 'N/A'), is_value=True), 3, 1)
+        info_grid.addWidget(make_label("Barcode:"), 3, 2)
+
+        barcode_text = self.product_data.get('barcode', '')
+        if barcode_text:
+            barcode_value = make_label(barcode_text, is_value=True)
+            barcode_value.setFont(QFont("Courier", 13))
+        else:
+            barcode_value = make_label("No Barcode", is_value=True)
+            barcode_value.setStyleSheet("color: #999999; font-style: italic; border: none; padding: 0px; margin: 0px;")
+
+        info_grid.addWidget(barcode_value, 3, 3)
+
+        details_layout.addLayout(info_grid)
+
+        # Barcode image display directly under the barcode number
+        barcode_img_path = self.product_data.get('barcode_image', '')
+        barcode_text = str(self.product_data.get('barcode', ''))
+
+        possible_paths = []
+        if barcode_img_path:
+            # exact path stored
+            possible_paths.append(barcode_img_path)
+            # same name inside barcodes folder
+            possible_paths.append(os.path.join('barcodes', os.path.basename(barcode_img_path)))
+
+        # derive from barcode number if available
+        if barcode_text and barcode_text not in ('N/A', ''):
+            possible_paths.extend([
+                f'barcode_{barcode_text}.png',
+                f'barcode_{barcode_text}.png.png',
+                os.path.join('barcodes', f'{barcode_text}.png'),
+                os.path.join('barcodes', f'{barcode_text}.png.png'),
+                os.path.join('barcodes', f'barcode_{barcode_text}.png'),
+                os.path.join('barcodes', f'barcode_{barcode_text}.png.png')
+            ])
+
+        # include SKU prefix variants
+        sku_value = str(self.product_data.get('sku', '')).strip()
+        if sku_value and sku_value not in ('N/A', '') and barcode_text and barcode_text not in ('N/A', ''):
+            possible_paths.extend([
+                f'{sku_value}_{barcode_text}.png',
+                f'{sku_value}_{barcode_text}.png.png',
+                os.path.join('barcodes', f'{sku_value}_{barcode_text}.png'),
+                os.path.join('barcodes', f'{sku_value}_{barcode_text}.png.png')
+            ])
+
+        resolved_barcode_img = next((p for p in possible_paths if os.path.isfile(p)), '')
+
+        if resolved_barcode_img:
+            barcode_img_label = QLabel()
+            barcode_pixmap = QPixmap(resolved_barcode_img)
+            if not barcode_pixmap.isNull():
+                barcode_pixmap = barcode_pixmap.scaled(180, 60, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                barcode_img_label.setPixmap(barcode_pixmap)
+                barcode_img_label.setAlignment(Qt.AlignCenter)
+                # Place the image spanning full grid width beneath barcode row
+                info_grid.addWidget(barcode_img_label, 4, 0, 1, 4)
+        else:
+            print(f'[INFO] Barcode image not found for: {barcode_text} (searched {len(possible_paths)} paths)')
+
+        # Days left (prominent display at bottom)
+        days_left = self.product_data.get('days_left', 0)
+        if days_left < 0:
+            days_text = f"⚠️ EXPIRED ({abs(days_left)} days ago)"
+            days_color = "#D32F2F"
+            days_bg = "#FFCDD2"
+        elif days_left == 0:
+            days_text = "⚠️ EXPIRES TODAY"
+            days_color = "#D32F2F"
+            days_bg = "#FFCDD2"
+        elif days_left <= 7:
+            days_text = f"🔴 {days_left} days left"
+            days_color = "#D32F2F"
+            days_bg = "#FFEBEE"
+        elif days_left <= 15:
+            days_text = f"🟠 {days_left} days left"
+            days_color = "#F57C00"
+            days_bg = "#FFF3E0"
+        elif days_left <= 30:
+            days_text = f"🟡 {days_left} days left"
+            days_color = "#FBC02D"
+            days_bg = "#FFFDE7"
+        else:
+            days_text = f"🟢 {days_left} days left"
+            days_color = "#388E3C"
+            days_bg = "#F1F8E9"
+
+        days_label = QLabel(days_text)
+        days_label.setFont(QFont("Arial", 16, QFont.Bold))
+        days_label.setStyleSheet(f"""
+            color: {days_color}; 
+            background-color: {days_bg}; 
+            padding: 12px 20px; 
+            border-radius: 8px; 
+            border: 2px solid {days_color};
+            margin-top: 10px;
+        """)
+        days_label.setAlignment(Qt.AlignCenter)
+        details_layout.addWidget(days_label)
+
+        details_layout.addStretch()
+        main_layout.addWidget(details_container)
+
+        self.setLayout(main_layout)
+
+
+class ProductCard(QFrame):
+    def __init__(self, product_data, parent=None):
+        super().__init__(parent)
+        self.product_data = product_data
+        self.setMinimumSize(1400, 315)  # Changed from setFixedSize to allow flexible resizing
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+        self.setFrameStyle(QFrame.StyledPanel)
+
+        # Calculate days until expiration
+        days_left = product_data.get('days_left', 0)
+
+        # Set color based on urgency
+        if days_left <= 7:
+            border_color = "#F44336"  # Red - Very urgent
+            bg_color = "#FFEBEE"
+        elif days_left <= 15:
+            border_color = "#FF9800"  # Orange - Urgent
+            bg_color = "#FFF3E0"
+        elif days_left <= 30:
+            border_color = "#FFC107"  # Yellow - Warning
+            bg_color = "#FFFDE7"
+        else:
+            border_color = "#4CAF50"  # Green - Normal
+            bg_color = "#F1F8E9"
+
+        self.setStyleSheet(f"""
+            QFrame {{
+                background-color: {bg_color};
+                border: 2px solid {border_color};
+                border-radius: 12px;
+                margin: 10px;
+            }}
+            QFrame:hover {{
+                box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
+                transform: translateY(-2px);
+            }}
+        """)
+
+        self.init_ui()
+
+    def init_ui(self):
+        # Main horizontal layout - image on left, details on right
+        main_layout = QHBoxLayout()
+        main_layout.setContentsMargins(20, 20, 20, 20)
+        main_layout.setSpacing(25)
+
+        # Left side - Product image
+        image_container = QFrame()
+        image_container.setFixedSize(250, 280)
+        image_container.setStyleSheet("""
+            QFrame {
+                background-color: transparent;
+                border: none;
+            }
+        """)
+
+        image_layout = QVBoxLayout(image_container)
+        image_layout.setContentsMargins(15, 15, 15, 15)
+        image_layout.setAlignment(Qt.AlignCenter)
+
+        # Product image
+        product_image = QLabel()
+        product_image.setFixedSize(220, 200)
+        product_image.setAlignment(Qt.AlignCenter)
+        product_image.setStyleSheet("""
+            QLabel {
+                background-color: transparent;
+                border: none;
+                border-radius: 0px;
+            }
+        """)
+
+        # Load product image if available
+        image_path = self.product_data.get('product_image', '')
+        if image_path and os.path.exists(image_path):
+            try:
+                pixmap = QPixmap(image_path)
+                if not pixmap.isNull():
+                    scaled_pixmap = pixmap.scaled(218, 198, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                    product_image.setPixmap(scaled_pixmap)
+                    product_image.setText("")
+                else:
+                    product_image.setText("No Image")
+                    product_image.setStyleSheet(product_image.styleSheet() + "color: #999; font-size: 12px;")
+            except:
+                product_image.setText("No Image")
+                product_image.setStyleSheet(product_image.styleSheet() + "color: #999; font-size: 12px;")
+        else:
+            product_image.setText("No Image")
+            product_image.setStyleSheet(product_image.styleSheet() + "color: #999; font-size: 12px;")
+
+        image_layout.addWidget(product_image)
+
+        # Barcode image (if available)
+        barcode_image_path = self.product_data.get('barcode_image', '')
+        if barcode_image_path and os.path.exists(barcode_image_path):
+            barcode_image = QLabel()
+            barcode_image.setFixedHeight(35)
+            barcode_image.setAlignment(Qt.AlignCenter)
+            try:
+                barcode_pixmap = QPixmap(barcode_image_path)
+                if not barcode_pixmap.isNull():
+                    scaled_barcode = barcode_pixmap.scaled(200, 33, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                    barcode_image.setPixmap(scaled_barcode)
+                    barcode_image.setStyleSheet(
+                        "background-color: white; border: 1px solid #DDD; border-radius: 3px; margin-top: 5px;")
+                    image_layout.addWidget(barcode_image)
+            except:
+                pass
+
+        main_layout.addWidget(image_container)
+
+        # Right side - Product details
+        details_container = QFrame()
+        details_layout = QVBoxLayout(details_container)
+        details_layout.setContentsMargins(0, 0, 0, 0)
+        details_layout.setSpacing(15)
+
+        # Product name (large, bold)
+        name_label = QLabel(self.product_data.get('product_name', 'Unknown Product'))
+        name_label.setFont(QFont("Arial", 18, QFont.Bold))
+        name_label.setStyleSheet("""
+            color: #002D04;
+            border: none;
+            padding: 0px;
+            margin: 0px;
+        """)
+        name_label.setAlignment(Qt.AlignCenter)
+
+        name_label.setWordWrap(True)
+        details_layout.addWidget(name_label)
+
+        # Product info grid
+        info_grid = QGridLayout()
+        info_grid.setHorizontalSpacing(20)  # 控制列与列的水平间距
+        info_grid.setVerticalSpacing(4)  # 缩小行与行之间的垂直间距
+
+        # 公用样式：移除边框、边距、设置字体颜色
+        label_style = """
+            color: #000000;
+            border: none;
+            padding: 0px;
+            margin: 0px;
+        """
+        value_style = """
+            color: #333333;
+            border: none;
+            padding: 0px;
+            margin: 0px;
+        """
+
+        def make_label(text, bold=False, is_value=False):
+            label = QLabel(text)
+            font = QFont("Arial", 13)
+            if bold:
+                font.setBold(True)
+            label.setFont(font)
+            label.setStyleSheet(value_style if is_value else label_style)
+
+            if is_value:
+                label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+            else:
+                label.setAlignment(Qt.AlignCenter)
+            return label
+
+        # Row 1
+        info_grid.addWidget(make_label("Product ID:"), 0, 0)
+        info_grid.addWidget(make_label(str(self.product_data.get('product_id', 'N/A')), is_value=True), 0, 1)
+        info_grid.addWidget(make_label("Manufacture Date:"), 0, 2)
+        info_grid.addWidget(make_label(self.product_data.get('manufacture_date', 'N/A'), is_value=True), 0, 3)
+
+        # Row 2
+        info_grid.addWidget(make_label("Branch:"), 1, 0)
+        info_grid.addWidget(make_label(self.product_data.get('branch', 'Main Branch- Bayan Lepas'), is_value=True), 1,
+                            1)
+        info_grid.addWidget(make_label("Expiry Date:", bold=True), 1, 2)
+        info_grid.addWidget(make_label(self.product_data.get('expired_date', 'N/A'), is_value=True, bold=True), 1, 3)
+
+        # Row 3
+        info_grid.addWidget(make_label("SKU:"), 2, 0)
+        info_grid.addWidget(
+            make_label(str(self.product_data.get('sku', self.product_data.get('product_id', 'N/A'))), is_value=True), 2,
+            1)
+        info_grid.addWidget(make_label("Rack Location:"), 2, 2)
+        info_grid.addWidget(make_label(self.product_data.get('rack_location', 'Unassigned'), is_value=True), 2, 3)
+
+        # Row 4
+        info_grid.addWidget(make_label("Batch:"), 3, 0)
+        info_grid.addWidget(make_label(self.product_data.get('batch', 'N/A'), is_value=True), 3, 1)
+        info_grid.addWidget(make_label("Barcode:"), 3, 2)
+
+        barcode_text = self.product_data.get('barcode', '')
+        if barcode_text:
+            barcode_value = make_label(barcode_text, is_value=True)
+            barcode_value.setFont(QFont("Courier", 13))
+        else:
+            barcode_value = make_label("No Barcode", is_value=True)
+            barcode_value.setStyleSheet("color: #999999; font-style: italic; border: none; padding: 0px; margin: 0px;")
+
+        info_grid.addWidget(barcode_value, 3, 3)
+
+        details_layout.addLayout(info_grid)
+
+        # Calculate days left until expiry
+        expired_str = self.product_data.get('expired_date', '')
+        days_left = 0
+        if expired_str and expired_str not in ('N/A', ''):
+            try:
+                # Extract only date component if datetime string
+                date_part = expired_str.split(' ')[0]
+                exp_dt = datetime.strptime(date_part, '%Y-%m-%d')
+                days_left = (exp_dt.date() - datetime.now().date()).days
+            except Exception:
+                pass  # keep default 0 if parsing fails
+
+        # Days left (prominent display)
+        if days_left < 0:
+            days_text = f"⚠️ EXPIRED ({abs(days_left)} days ago)"
+            days_color = "#D32F2F"
+            days_bg = "#FFCDD2"
+        elif days_left == 0:
+            days_text = "⚠️ EXPIRES TODAY"
+            days_color = "#D32F2F"
+            days_bg = "#FFCDD2"
+        elif days_left <= 7:
+            days_text = f"🔴 {days_left} days left"
+            days_color = "#D32F2F"
+            days_bg = "#FFEBEE"
+        elif days_left <= 15:
+            days_text = f"🟠 {days_left} days left"
+            days_color = "#F57C00"
+            days_bg = "#FFF3E0"
+        elif days_left <= 30:
+            days_text = f"🟡 {days_left} days left"
+            days_color = "#FBC02D"
+            days_bg = "#FFFDE7"
+        else:
+            days_text = f"🟢 {days_left} days left"
+            days_color = "#388E3C"
+            days_bg = "#F1F8E9"
+
+        days_label = QLabel(days_text)
+        days_label.setFont(QFont("Arial", 14, QFont.Bold))  # smaller font
+        days_label.setStyleSheet(f"""
+            color: {days_color}; 
+            background-color: {days_bg}; 
+            padding: 8px 16px; 
+            border-radius: 6px; 
+            border: 1px solid {days_color};
+            margin-top: 8px;
+        """)
+        days_label.setAlignment(Qt.AlignCenter)
+        details_layout.addWidget(days_label)
+
+        details_layout.addStretch()
+        main_layout.addWidget(details_container)
+
+        self.setLayout(main_layout)
+
+
+class EmailSettingsDialog(QDialog):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("📬 Email Settings")
+        self.setFixedSize(500, 400)
+        self.setStyleSheet("""
+            QDialog {
+                background-color: #f0f8f0;
+            }
+            QLineEdit, QTextEdit, QComboBox, QSpinBox {
+                border: 2px solid #4CAF50;
+                border-radius: 5px;
+                padding: 8px;
+                background-color: white;
+            }
+            QPushButton {
+                background-color: #4CAF50;
+                color: white;
+                border: none;
+                border-radius: 5px;
+                padding: 10px 20px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #45a049;
+            }
+            QGroupBox {
+                font-weight: bold;
+                border: 2px solid #4CAF50;
+                border-radius: 5px;
+                margin-top: 10px;
+                padding-top: 10px;
+            }
+        """)
+
+        layout = QVBoxLayout()
+
+        # SMTP Settings
+        smtp_group = QGroupBox("SMTP Configuration")
+        smtp_layout = QFormLayout()
+
+        self.smtp_server = QLineEdit()
+        self.smtp_server.setPlaceholderText("smtp.gmail.com")
+        smtp_layout.addRow("SMTP Server:", self.smtp_server)
+
+        self.smtp_port = QSpinBox()
+        self.smtp_port.setRange(1, 65535)
+        self.smtp_port.setValue(587)
+        smtp_layout.addRow("Port:", self.smtp_port)
+
+        self.sender_email = QLineEdit()
+        self.sender_email.setPlaceholderText("venniscc04@gmail.com")
+        smtp_layout.addRow("Sender Email:", self.sender_email)
+
+        self.sender_password = QLineEdit()
+        self.sender_password.setEchoMode(QLineEdit.Password)
+        self.sender_password.setPlaceholderText("beoj bywk xffl hqoo")
+        smtp_layout.addRow("Password:", self.sender_password)
+
+        smtp_group.setLayout(smtp_layout)
+        layout.addWidget(smtp_group)
+
+        # Notification Settings
+        notification_group = QGroupBox("Notification Schedule")
+        notification_layout = QFormLayout()
+
+        self.notify_maturation = QCheckBox("Samples near maturation")
+        self.notify_expired = QCheckBox("Expired samples")
+        self.notify_assignments = QCheckBox("New task assignments")
+
+        notification_layout.addRow("Enable notifications for:", self.notify_maturation)
+        notification_layout.addRow("", self.notify_expired)
+        notification_layout.addRow("", self.notify_assignments)
+
+        self.notification_frequency = QComboBox()
+        self.notification_frequency.addItems(["Daily", "Weekly", "Monthly"])
+        notification_layout.addRow("Frequency:", self.notification_frequency)
+
+        notification_group.setLayout(notification_layout)
+        layout.addWidget(notification_group)
+
+        # Email Template
+        template_group = QGroupBox("Email Template")
+        template_layout = QVBoxLayout()
+
+        self.email_template = QTextEdit()
+        self.email_template.setPlainText("""Subject: Medical Sample Status Update
+
+Dear Team,
+
+This is an automated notification about medical sample status updates:
+
+{CONTENT}
+
+Best regards,
+Medical Sample Management System""")
+        template_layout.addWidget(self.email_template)
+
+        template_group.setLayout(template_layout)
+        layout.addWidget(template_group)
+
+        # Buttons
+        button_layout = QHBoxLayout()
+        save_button = QPushButton("Save Settings")
+        save_button.clicked.connect(self.save_settings)
+        test_button = QPushButton("Send Test Email")
+        test_button.clicked.connect(self.send_test_email)
+        cancel_button = QPushButton("Cancel")
+        cancel_button.clicked.connect(self.reject)
+
+        button_layout.addWidget(save_button)
+        button_layout.addWidget(test_button)
+        button_layout.addWidget(cancel_button)
+
+        layout.addLayout(button_layout)
+        self.setLayout(layout)
+
+    def save_settings(self):
+        QMessageBox.information(self, "Settings Saved", "Email settings have been saved successfully!")
+        self.accept()
+
+    def send_test_email(self):
+        QMessageBox.information(self, "Test Email", "Test email sent successfully!")
+
+
+class UserManagementDialog(QDialog):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("👥 User Management")
+        self.setFixedSize(700, 500)
+        self.setStyleSheet("""
+            QDialog {
+                background-color: #f0f8f0;
+            }
+            QTableWidget {
+                gridline-color: #C8E6C9;
+                background-color: white;
+                alternate-background-color: #f5f5f5;
+                selection-background-color: #81C784;
+            }
+            QHeaderView::section {
+                background-color: #4CAF50;
+                color: white;
+                padding: 8px;
+                border: 1px solid #45a049;
+                font-weight: bold;
+            }
+            QPushButton {
+                background-color: #4CAF50;
+                color: white;
+                border: none;
+                border-radius: 5px;
+                padding: 8px 16px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #45a049;
+            }
+        """)
+
+        layout = QVBoxLayout()
+
+        # User table
+        self.user_table = QTableWidget()
+        self.user_table.setColumnCount(5)
+        self.user_table.setHorizontalHeaderLabels(["ID", "Username", "Role", "Email", "Last Login"])
+        self.user_table.horizontalHeader().setStretchLastSection(True)
+        layout.addWidget(self.user_table)
+
+        # Buttons
+        button_layout = QHBoxLayout()
+        add_user_btn = QPushButton("Add User")
+        add_user_btn.clicked.connect(self.add_user)
+        edit_user_btn = QPushButton("Edit User")
+        edit_user_btn.clicked.connect(self.edit_user)
+        delete_user_btn = QPushButton("Delete User")
+        delete_user_btn.clicked.connect(self.delete_user)
+        reset_password_btn = QPushButton("Reset Password")
+        reset_password_btn.clicked.connect(self.reset_password)
+
+        button_layout.addWidget(add_user_btn)
+        button_layout.addWidget(edit_user_btn)
+        button_layout.addWidget(delete_user_btn)
+        button_layout.addWidget(reset_password_btn)
+
+        layout.addLayout(button_layout)
+        self.setLayout(layout)
+        self.load_users()
+
+    def load_users(self):
+        """Load users from the database"""
+        try:
+            conn = sqlite3.connect("testing_system.db")
+            cursor = conn.cursor()
+
+            # Load users with their roles
+            cursor.execute("""
+                SELECT u.user_id, u.username, r.role_name, u.email, u.phone_no
+                FROM users u
+                LEFT JOIN roles r ON u.role = r.role_id
+                ORDER BY u.user_id
+            """)
+
+            users = cursor.fetchall()
+            conn.close()
+
+            self.user_table.setRowCount(len(users))
+            for row, user in enumerate(users):
+                for col, value in enumerate(user):
+                    item = QTableWidgetItem(str(value) if value is not None else "")
+                    self.user_table.setItem(row, col, item)
+
+            print(f"✓ Loaded {len(users)} users from the database.")
+
+        except sqlite3.Error as e:
+            print(f"✗ Database error in UserManagementDialog: {e}")
+            QMessageBox.critical(self, "Database Error", f"Could not load users: {e}")
+            self.user_table.setRowCount(0)
+
+    def add_user(self):
+        QMessageBox.information(self, "Add User", "Add user functionality will be implemented here.")
+
+    def edit_user(self):
+        QMessageBox.information(self, "Edit User", "Edit user functionality will be implemented here.")
+
+    def delete_user(self):
+        QMessageBox.information(self, "Delete User", "Delete user functionality will be implemented here.")
+
+    def reset_password(self):
+        QMessageBox.information(self, "Reset Password", "Password reset functionality will be implemented here.")
+
+
+class SystemSettingsDialog(QDialog):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("⚙️ System Settings")
+        self.setFixedSize(500, 400)
+        self.setStyleSheet("""
+            QDialog {
+                background-color: #f0f8f0;
+            }
+            QLineEdit, QSpinBox, QComboBox {
+                border: 2px solid #4CAF50;
+                border-radius: 5px;
+                padding: 8px;
+                background-color: white;
+            }
+            QPushButton {
+                background-color: #4CAF50;
+                color: white;
+                border: none;
+                border-radius: 5px;
+                padding: 10px 20px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #45a049;
+            }
+            QGroupBox {
+                font-weight: bold;
+                border: 2px solid #4CAF50;
+                border-radius: 5px;
+                margin-top: 10px;
+                padding-top: 10px;
+            }
+        """)
+
+        layout = QVBoxLayout()
+
+        # Expiration Rules
+        expiration_group = QGroupBox("Expiration Rules")
+        expiration_layout = QFormLayout()
+
+        self.default_shelf_life = QSpinBox()
+        self.default_shelf_life.setRange(1, 3650)
+        self.default_shelf_life.setValue(365)
+        self.default_shelf_life.setSuffix(" days")
+        expiration_layout.addRow("Default Shelf Life:", self.default_shelf_life)
+
+        self.warning_period = QSpinBox()
+        self.warning_period.setRange(1, 365)
+        self.warning_period.setValue(60)
+        self.warning_period.setSuffix(" days")
+        expiration_layout.addRow("Warning Period:", self.warning_period)
+
+        expiration_group.setLayout(expiration_layout)
+        layout.addWidget(expiration_group)
+
+        # System Parameters
+        system_group = QGroupBox("System Parameters")
+        system_layout = QFormLayout()
+
+        self.max_login_attempts = QSpinBox()
+        self.max_login_attempts.setRange(1, 10)
+        self.max_login_attempts.setValue(3)
+        system_layout.addRow("Max Login Attempts:", self.max_login_attempts)
+
+        self.session_timeout = QSpinBox()
+        self.session_timeout.setRange(5, 480)
+        self.session_timeout.setValue(60)
+        self.session_timeout.setSuffix(" minutes")
+        system_layout.addRow("Session Timeout:", self.session_timeout)
+
+        self.backup_frequency = QComboBox()
+        self.backup_frequency.addItems(["Daily", "Weekly", "Monthly"])
+        system_layout.addRow("Backup Frequency:", self.backup_frequency)
+
+        system_group.setLayout(system_layout)
+        layout.addWidget(system_group)
+
+        # Buttons
+        button_layout = QHBoxLayout()
+        save_button = QPushButton("Save Settings")
+        save_button.clicked.connect(self.save_settings)
+        reset_button = QPushButton("Reset to Defaults")
+        reset_button.clicked.connect(self.reset_defaults)
+        cancel_button = QPushButton("Cancel")
+        cancel_button.clicked.connect(self.reject)
+
+        button_layout.addWidget(save_button)
+        button_layout.addWidget(reset_button)
+        button_layout.addWidget(cancel_button)
+
+        layout.addLayout(button_layout)
+        self.setLayout(layout)
+
+    def save_settings(self):
+        QMessageBox.information(self, "Settings Saved", "System settings have been saved successfully!")
+        self.accept()
+
+    def reset_defaults(self):
+        self.default_shelf_life.setValue(365)
+        self.warning_period.setValue(60)
+        self.max_login_attempts.setValue(3)
+        self.session_timeout.setValue(60)
+        self.backup_frequency.setCurrentIndex(0)
+
+
+class ExportReportsDialog(QDialog):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("📤 Export Full Reports")
+        self.setFixedSize(450, 350)
+        self.setStyleSheet("""
+            QDialog {
+                background-color: #f0f8f0;
+            }
+            QPushButton {
+                background-color: #4CAF50;
+                color: white;
+                border: none;
+                border-radius: 5px;
+                padding: 10px 20px;
+                font-weight: bold;
+                text-align: left;
+            }
+            QPushButton:hover {
+                background-color: #45a049;
+            }
+            QGroupBox {
+                font-weight: bold;
+                border: 2px solid #4CAF50;
+                border-radius: 5px;
+                margin-top: 10px;
+                padding-top: 10px;
+            }
+        """)
+
+        layout = QVBoxLayout()
+
+        # Report Types
+        reports_group = QGroupBox("Available Reports")
+        reports_layout = QVBoxLayout()
+
+        shelf_life_btn = QPushButton("📊 Shelf-Life Report (Excel)")
+        shelf_life_btn.clicked.connect(lambda: self.export_report("shelf_life", "excel"))
+        reports_layout.addWidget(shelf_life_btn)
+
+        inventory_excel_btn = QPushButton("📦 Inventory Data (Excel)")
+        inventory_excel_btn.clicked.connect(lambda: self.export_report("inventory", "excel"))
+        reports_layout.addWidget(inventory_excel_btn)
+
+        inventory_pdf_btn = QPushButton("📦 Inventory Report (PDF)")
+        inventory_pdf_btn.clicked.connect(lambda: self.export_report("inventory", "pdf"))
+        reports_layout.addWidget(inventory_pdf_btn)
+
+        activity_excel_btn = QPushButton("📋 User Activity (Excel)")
+        activity_excel_btn.clicked.connect(lambda: self.export_report("activity", "excel"))
+        reports_layout.addWidget(activity_excel_btn)
+
+        activity_pdf_btn = QPushButton("📋 Activity Report (PDF)")
+        activity_pdf_btn.clicked.connect(lambda: self.export_report("activity", "pdf"))
+        reports_layout.addWidget(activity_pdf_btn)
+
+        all_data_btn = QPushButton("🗂️ Complete System Export (Excel)")
+        all_data_btn.clicked.connect(lambda: self.export_report("complete", "excel"))
+        reports_layout.addWidget(all_data_btn)
+
+        reports_group.setLayout(reports_layout)
+        layout.addWidget(reports_group)
+
+        # Close button
+        close_button = QPushButton("Close")
+        close_button.clicked.connect(self.accept)
+        layout.addWidget(close_button)
+
+        self.setLayout(layout)
+
+    def export_report(self, report_type, format_type):
+        QMessageBox.information(self, "Export Started",
+                                f"Exporting {report_type} report as {format_type.upper()}...")
+
+
+class DatabaseMaintenanceDialog(QDialog):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("🔧 Database Maintenance")
+        self.setFixedSize(500, 400)
+        self.setStyleSheet("""
+            QDialog {
+                background-color: #f0f8f0;
+            }
+            QPushButton {
+                background-color: #4CAF50;
+                color: white;
+                border: none;
+                border-radius: 5px;
+                padding: 10px 20px;
+                font-weight: bold;
+                text-align: left;
+            }
+            QPushButton:hover {
+                background-color: #45a049;
+            }
+            QPushButton.warning {
+                background-color: #FF9800;
+            }
+            QPushButton.warning:hover {
+                background-color: #F57C00;
+            }
+            QPushButton.danger {
+                background-color: #F44336;
+            }
+            QPushButton.danger:hover {
+                background-color: #D32F2F;
+            }
+            QGroupBox {
+                font-weight: bold;
+                border: 2px solid #4CAF50;
+                border-radius: 5px;
+                margin-top: 10px;
+                padding-top: 10px;
+            }
+            QTextEdit {
+                border: 2px solid #81C784;
+                border-radius: 5px;
+                background-color: white;
+            }
+        """)
+
+        layout = QVBoxLayout()
+
+        # Cleanup Operations
+        cleanup_group = QGroupBox("Cleanup Operations")
+        cleanup_layout = QVBoxLayout()
+
+        old_logs_btn = QPushButton("🗑️ Remove Old Activity Logs (>6 months)")
+        old_logs_btn.clicked.connect(lambda: self.cleanup_operation("old_logs"))
+        cleanup_layout.addWidget(old_logs_btn)
+
+        expired_records_btn = QPushButton("🗑️ Remove Expired Test Records (>1 year)")
+        expired_records_btn.clicked.connect(lambda: self.cleanup_operation("expired_records"))
+        cleanup_layout.addWidget(expired_records_btn)
+
+        temp_files_btn = QPushButton("🗑️ Clear Temporary Files")
+        temp_files_btn.clicked.connect(lambda: self.cleanup_operation("temp_files"))
+        cleanup_layout.addWidget(temp_files_btn)
+
+        cleanup_group.setLayout(cleanup_layout)
+        layout.addWidget(cleanup_group)
+
+        # Database Operations
+        db_group = QGroupBox("Database Operations")
+        db_layout = QVBoxLayout()
+
+        optimize_btn = QPushButton("⚡ Optimize Database")
+        optimize_btn.clicked.connect(lambda: self.db_operation("optimize"))
+        db_layout.addWidget(optimize_btn)
+
+        backup_btn = QPushButton("💾 Create Backup")
+        backup_btn.clicked.connect(lambda: self.db_operation("backup"))
+        db_layout.addWidget(backup_btn)
+
+        verify_btn = QPushButton("🔍 Verify Database Integrity")
+        verify_btn.clicked.connect(lambda: self.db_operation("verify"))
+        db_layout.addWidget(verify_btn)
+
+        db_group.setLayout(db_layout)
+        layout.addWidget(db_group)
+
+        # Status Log
+        self.status_log = QTextEdit()
+        self.status_log.setReadOnly(True)
+        self.status_log.setMaximumHeight(100)
+        self.status_log.setPlainText("Ready for maintenance operations...")
+        layout.addWidget(QLabel("Operation Status:"))
+        layout.addWidget(self.status_log)
+
+        # Close button
+        close_button = QPushButton("Close")
+        close_button.clicked.connect(self.accept)
+        layout.addWidget(close_button)
+
+        self.setLayout(layout)
+
+    def cleanup_operation(self, operation_type):
+        self.status_log.append(f"Starting {operation_type} cleanup...")
+        QMessageBox.information(self, "Cleanup Complete",
+                                f"{operation_type.replace('_', ' ').title()} cleanup completed successfully!")
+        self.status_log.append(f"{operation_type.replace('_', ' ').title()} cleanup completed.")
+
+    def db_operation(self, operation_type):
+        self.status_log.append(f"Starting database {operation_type}...")
+        QMessageBox.information(self, "Operation Complete",
+                                f"Database {operation_type} completed successfully!")
+        self.status_log.append(f"Database {operation_type} completed.")
+
+class ProductDetailDialog(QDialog):
+    """Dialog for showing complete product details with recall functionality"""
+
+    def __init__(self, product_data, parent=None):
+        super().__init__(parent)
+        self.product_data = product_data
+        self.parent_dashboard = parent
+        self.setWindowTitle("Product Details")
+        self.setFixedSize(800, 700)
+        self.setModal(True)
+
+        # Set dialog style
+        self.setStyleSheet("""
+            QDialog {
+                background-color: #F5F5F5;
+                border: 2px solid #4CAF50;
+                border-radius: 15px;
+            }
+        """)
+
+        self.init_ui()
+
+    def init_ui(self):
+        """Initialize the user interface"""
+        layout = QVBoxLayout()
+        layout.setContentsMargins(25, 25, 25, 25)
+        layout.setSpacing(20)
+
+        # Title
+        title_label = QLabel("📦 Product Information")
+        title_label.setStyleSheet("""
+            QLabel {
+                font-size: 24px;
+                font-weight: bold;
+                color: #2E7D32;
+                margin-bottom: 10px;
+            }
+        """)
+        title_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(title_label)
+
+        # Product image display under the "Product Information" label
+        product_img_path = self.product_data.get('product_image', '')
+        product_img_label = QLabel()
+        product_img_label.setAlignment(Qt.AlignCenter)
+        if product_img_path and os.path.isfile(product_img_path):
+            pixmap = QPixmap(product_img_path)
+            if not pixmap.isNull():
+                pixmap = pixmap.scaled(250, 250, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                product_img_label.setPixmap(pixmap)
+        else:
+            product_img_label.setText("No Product Image")
+            product_img_label.setStyleSheet("color: #757575; font-style: italic;")
+        layout.addWidget(product_img_label)
+
+        # Create scrollable area for product details
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setStyleSheet("""
+            QScrollArea {
+                border: 1px solid #E0E0E0;
+                border-radius: 8px;
+                background-color: white;
+            }
+        """)
+
+        # Product details content
+        details_widget = QWidget()
+        details_layout = QVBoxLayout()
+        details_layout.setContentsMargins(20, 20, 20, 20)
+
+        # Product information grid
+        info_grid = QGridLayout()
+        info_grid.setSpacing(15)
+        info_grid.setHorizontalSpacing(20)
+        info_grid.setVerticalSpacing(12)
+
+        # Row 1: Product ID and Manufacture Date
+        id_label = QLabel("Product ID:")
+        id_label.setFont(QFont("Arial", 12, QFont.Bold))
+        id_label.setStyleSheet("color: #000000; padding: 4px;")
+        id_value = QLabel(str(self.product_data.get('product_id', 'N/A')))
+        id_value.setFont(QFont("Arial", 12))
+        id_value.setStyleSheet("color: #333333; padding: 4px;")
+
+        mfg_label = QLabel("Manufacture Date:")
+        mfg_label.setFont(QFont("Arial", 12, QFont.Bold))
+        mfg_label.setStyleSheet("color: #000000; padding: 4px;")
+        mfg_value = QLabel(str(self.product_data.get('manufacture_date', 'N/A')))
+        mfg_value.setFont(QFont("Arial", 12))
+        mfg_value.setStyleSheet("color: #333333; padding: 4px;")
+
+        info_grid.addWidget(id_label, 0, 0)
+        info_grid.addWidget(id_value, 0, 1)
+        info_grid.addWidget(mfg_label, 0, 2)
+        info_grid.addWidget(mfg_value, 0, 3)
+
+        # Row 2: Branch and Expiry Date
+        branch_label = QLabel("Branch:")
+        branch_label.setFont(QFont("Arial", 12, QFont.Bold))
+        branch_label.setStyleSheet("color: #000000; padding: 4px;")
+        # Get branch info from owner or use default
+        branch_value = QLabel(str(self.product_data.get('branch', 'Main Branch- Bayan Lepas')))
+        branch_value.setFont(QFont("Arial", 12))
+        branch_value.setStyleSheet("color: #333333; padding: 4px;")
+
+        expiry_label = QLabel("Expiry Date:")
+        expiry_label.setFont(QFont("Arial", 12, QFont.Bold))
+        expiry_label.setStyleSheet("color: #000000; padding: 4px;")
+        expiry_value = QLabel(str(self.product_data.get('expired_date', 'N/A')))
+        expiry_value.setFont(QFont("Arial", 12))
+        expiry_value.setStyleSheet("color: #333333; padding: 4px;")
+
+        info_grid.addWidget(branch_label, 1, 0)
+        info_grid.addWidget(branch_value, 1, 1)
+        info_grid.addWidget(expiry_label, 1, 2)
+        info_grid.addWidget(expiry_value, 1, 3)
+
+        # Row 3: SKU, Rack Location, Batch
+        sku_label = QLabel("SKU:")
+        sku_label.setFont(QFont("Arial", 12, QFont.Bold))
+        sku_label.setStyleSheet("color: #000000; padding: 4px;")
+        sku_value = QLabel(str(self.product_data.get('sku', self.product_data.get('product_id', 'N/A'))))
+        sku_value.setFont(QFont("Arial", 12))
+        sku_value.setStyleSheet("color: #333333; padding: 4px;")
+
+        rack_label = QLabel("Rack Location:")
+        rack_label.setFont(QFont("Arial", 12, QFont.Bold))
+        rack_label.setStyleSheet("color: #000000; padding: 4px;")
+        rack_value = QLabel(str(self.product_data.get('rack_location', 'Unassigned')))
+        rack_value.setFont(QFont("Arial", 12))
+        rack_value.setStyleSheet("color: #333333; padding: 4px;")
+
+        info_grid.addWidget(sku_label, 2, 0)
+        info_grid.addWidget(sku_value, 2, 1)
+        info_grid.addWidget(rack_label, 2, 2)
+        info_grid.addWidget(rack_value, 2, 3)
+
+        # Row 4: Batch and Barcode
+        batch_label = QLabel("Batch:")
+        batch_label.setFont(QFont("Arial", 12, QFont.Bold))
+        batch_label.setStyleSheet("color: #000000; padding: 4px;")
+        batch_value = QLabel(str(self.product_data.get('batch', 'N/A')))
+        batch_value.setFont(QFont("Arial", 12))
+        batch_value.setStyleSheet("color: #333333; padding: 4px;")
+
+        barcode_label = QLabel("Barcode:")
+        barcode_label.setFont(QFont("Arial", 12, QFont.Bold))
+        barcode_label.setStyleSheet("color: #000000; padding: 4px;")
+        barcode_text = str(self.product_data.get('barcode', ''))
+        if barcode_text and barcode_text != 'N/A':
+            barcode_value = QLabel(barcode_text)
+            barcode_value.setFont(QFont("Courier", 11, QFont.Bold))
+            barcode_value.setStyleSheet("color: #333333; padding: 4px;")
+        else:
+            barcode_value = QLabel("No Barcode")
+            barcode_value.setFont(QFont("Arial", 11))
+            barcode_value.setStyleSheet("color: #999999; padding: 4px; font-style: italic;")
+
+        info_grid.addWidget(batch_label, 3, 0)
+        info_grid.addWidget(batch_value, 3, 1)
+        info_grid.addWidget(barcode_label, 3, 2)
+        info_grid.addWidget(barcode_value, 3, 3)
+
+        # Barcode image display directly under the barcode number
+        barcode_img_path = self.product_data.get('barcode_image', '')
+        barcode_text = str(self.product_data.get('barcode', ''))
+
+        possible_paths = []
+        if barcode_img_path:
+            # exact path stored
+            possible_paths.append(barcode_img_path)
+            # same name inside barcodes folder
+            possible_paths.append(os.path.join('barcodes', os.path.basename(barcode_img_path)))
+
+        # derive from barcode number if available
+        if barcode_text and barcode_text not in ('N/A', ''):
+            possible_paths.extend([
+                f'barcode_{barcode_text}.png',
+                f'barcode_{barcode_text}.png.png',
+                os.path.join('barcodes', f'{barcode_text}.png'),
+                os.path.join('barcodes', f'{barcode_text}.png.png'),
+                os.path.join('barcodes', f'barcode_{barcode_text}.png'),
+                os.path.join('barcodes', f'barcode_{barcode_text}.png.png')
+            ])
+
+        # include SKU prefix variants
+        sku_value = str(self.product_data.get('sku', '')).strip()
+        if sku_value and sku_value not in ('N/A', '') and barcode_text and barcode_text not in ('N/A', ''):
+            possible_paths.extend([
+                f'{sku_value}_{barcode_text}.png',
+                f'{sku_value}_{barcode_text}.png.png',
+                os.path.join('barcodes', f'{sku_value}_{barcode_text}.png'),
+                os.path.join('barcodes', f'{sku_value}_{barcode_text}.png.png')
+            ])
+
+        resolved_barcode_img = next((p for p in possible_paths if os.path.isfile(p)), '')
+
+        if resolved_barcode_img:
+            barcode_img_label = QLabel()
+            barcode_pixmap = QPixmap(resolved_barcode_img)
+            if not barcode_pixmap.isNull():
+                barcode_pixmap = barcode_pixmap.scaled(180, 60, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                barcode_img_label.setPixmap(barcode_pixmap)
+                barcode_img_label.setAlignment(Qt.AlignCenter)
+                # Place the image spanning full grid width beneath barcode row
+                info_grid.addWidget(barcode_img_label, 4, 0, 1, 4)
+        else:
+            print(f'[INFO] Barcode image not found for: {barcode_text} (searched {len(possible_paths)} paths)')
+
+        details_layout.addLayout(info_grid)
+
+        # Calculate days left until expiry
+        expired_str = self.product_data.get('expired_date', '')
+        days_left = 0
+        if expired_str and expired_str not in ('N/A', ''):
+            try:
+                # Extract only date component if datetime string
+                date_part = expired_str.split(' ')[0]
+                exp_dt = datetime.strptime(date_part, '%Y-%m-%d')
+                days_left = (exp_dt.date() - datetime.now().date()).days
+            except Exception:
+                pass  # keep default 0 if parsing fails
+
+        # Days left (prominent display)
+        if days_left < 0:
+            days_text = f"⚠️ EXPIRED ({abs(days_left)} days ago)"
+            days_color = "#D32F2F"
+            days_bg = "#FFCDD2"
+        elif days_left == 0:
+            days_text = "⚠️ EXPIRES TODAY"
+            days_color = "#D32F2F"
+            days_bg = "#FFCDD2"
+        elif days_left <= 7:
+            days_text = f"🔴 {days_left} days left"
+            days_color = "#D32F2F"
+            days_bg = "#FFEBEE"
+        elif days_left <= 15:
+            days_text = f"🟠 {days_left} days left"
+            days_color = "#F57C00"
+            days_bg = "#FFF3E0"
+        elif days_left <= 30:
+            days_text = f"🟡 {days_left} days left"
+            days_color = "#FBC02D"
+            days_bg = "#FFFDE7"
+        else:
+            days_text = f"🟢 {days_left} days left"
+            days_color = "#388E3C"
+            days_bg = "#F1F8E9"
+
+        days_label = QLabel(days_text)
+        days_label.setFont(QFont("Arial", 14, QFont.Bold))  # smaller font
+        days_label.setStyleSheet(f"""
+            color: {days_color}; 
+            background-color: {days_bg}; 
+            padding: 8px 16px; 
+            border-radius: 6px; 
+            border: 1px solid {days_color};
+            margin-top: 8px;
+        """)
+        days_label.setAlignment(Qt.AlignCenter)
+        details_layout.addWidget(days_label)
+
+        details_layout.addStretch()
+
+        # Set the layout on the details widget and add to scroll area
+        details_widget.setLayout(details_layout)
+        scroll.setWidget(details_widget)
+        layout.addWidget(scroll)
+
+        # Buttons
+        button_layout = QHBoxLayout()
+        button_layout.setSpacing(15)
+
+        # Close button
+        close_btn = QPushButton("✕ Close")
+        close_btn.setFixedSize(120, 40)
+        close_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #757575;
+                color: white;
+                border: none;
+                border-radius: 20px;
+                font-size: 14px;
+                font-weight: bold;
+            }
+            QPushButton:hover { background-color: #616161; }
+        """)
+        close_btn.clicked.connect(self.accept)
+
+        # Recall product button
+        recall_btn = QPushButton("⚠️ Recall Product")
+        recall_btn.setFixedSize(150, 40)
+        recall_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #F44336;
+                color: white;
+                border: none;
+                border-radius: 20px;
+                font-size: 14px;
+                font-weight: bold;
+            }
+            QPushButton:hover { background-color: #D32F2F; }
+        """)
+        recall_btn.clicked.connect(self.show_recall_dialog)
+
+        button_layout.addStretch()
+        button_layout.addWidget(close_btn)
+        button_layout.addWidget(recall_btn)
+        button_layout.addStretch()
+
+        layout.addLayout(button_layout)
+        self.setLayout(layout)
+
+    def add_field_to_grid(self, grid, label_text, value_text, row, is_recall=False):
+        """Add a field to the grid layout"""
+        label = QLabel(label_text)
+        label.setStyleSheet("""
+            QLabel {
+                font-weight: bold;
+                color: #424242;
+                min-width: 150px;
+            }
+        """)
+
+        value = QLabel(value_text)
+        if is_recall:
+            value.setStyleSheet("""
+                QLabel {
+                    color: #D32F2F;
+                    font-weight: bold;
+                    background-color: #FFEBEE;
+                    padding: 5px;
+                    border-radius: 4px;
+                    border: 1px solid #FFCDD2;
+                }
+            """)
+        else:
+            value.setStyleSheet("""
+                QLabel {
+                    color: #212121;
+                    background-color: #F8F9FA;
+                    padding: 5px;
+                    border-radius: 4px;
+                    border: 1px solid #E9ECEF;
+                }
+            """)
+
+        grid.addWidget(label, row, 0)
+        grid.addWidget(value, row, 1)
+
+    def show_recall_dialog(self):
+        """Show recall reason selection dialog"""
+        recall_dialog = QDialog(self)
+        recall_dialog.setWindowTitle("Product Recall")
+        recall_dialog.setFixedSize(400, 250)
+        recall_dialog.setModal(True)
+
+        recall_dialog.setStyleSheet("""
+            QDialog {
+                background-color: #FFF3E0;
+                border: 2px solid #FF9800;
+                border-radius: 10px;
+            }
+        """)
+
+        layout = QVBoxLayout()
+        layout.setContentsMargins(20, 20, 20, 20)
+
+        # Warning message
+        warning_label = QLabel("⚠️ Warning: Product Recall")
+        warning_label.setStyleSheet("""
+            QLabel {
+                font-size: 18px;
+                font-weight: bold;
+                color: #E65100;
+                margin-bottom: 10px;
+            }
+        """)
+        warning_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(warning_label)
+
+        # Instruction
+        instruction_label = QLabel("Please select the reason for recalling this product:")
+        instruction_label.setStyleSheet("color: #BF360C; font-weight: bold; margin-bottom: 10px;")
+        layout.addWidget(instruction_label)
+
+        # Reason dropdown
+        self.reason_combo = QComboBox()
+        self.reason_combo.addItems([
+            "Labeling errors",
+            "Expired medication",
+            "Contamination issues",
+            "Defective product",
+            "Others"
+        ])
+        self.reason_combo.setStyleSheet("""
+            QComboBox {
+                border: 2px solid #FF9800;
+                border-radius: 5px;
+                padding: 8px;
+                font-size: 14px;
+                background-color: white;
+            }
+            QComboBox:hover {
+                border-color: #F57C00;
+            }
+        """)
+        layout.addWidget(self.reason_combo)
+
+        # Buttons
+        button_layout = QHBoxLayout()
+
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #757575;
+                color: white;
+                border: none;
+                border-radius: 5px;
+                padding: 10px 20px;
+                font-weight: bold;
+            }
+            QPushButton:hover { background-color: #616161; }
+        """)
+        cancel_btn.clicked.connect(recall_dialog.reject)
+
+        confirm_btn = QPushButton("Confirm Recall")
+        confirm_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #F44336;
+                color: white;
+                border: none;
+                border-radius: 5px;
+                padding: 10px 20px;
+                font-weight: bold;
+            }
+            QPushButton:hover { background-color: #D32F2F; }
+        """)
+        confirm_btn.clicked.connect(lambda: self.process_recall(recall_dialog))
+
+        button_layout.addWidget(cancel_btn)
+        button_layout.addWidget(confirm_btn)
+        layout.addLayout(button_layout)
+
+        recall_dialog.setLayout(layout)
+        recall_dialog.exec_()
+
+    def process_recall(self, dialog):
+        """Process the product recall"""
+        reason = self.reason_combo.currentText()
+        product_id = self.product_data[0]
+
+        try:
+            conn = sqlite3.connect("testing_system.db")
+            cursor = conn.cursor()
+
+            # Update product with recall reason
+            cursor.execute("""
+                UPDATE products 
+                SET rejection_comment = ?, status = 'Recalled'
+                WHERE product_id = ?
+            """, (reason, product_id))
+
+            conn.commit()
+            conn.close()
+
+            dialog.accept()
+            QMessageBox.information(self, "Recall Successful",
+                                    f"Product has been recalled.\nReason: {reason}")
+
+            # Refresh the parent dashboard
+            if self.parent_dashboard:
+                self.parent_dashboard.load_inventory_data()
+
+            self.accept()
+
+        except Exception as e:
+            print(f"✗ Error processing recall: {e}")
+            QMessageBox.critical(self, "Recall Error", f"Failed to process recall: {str(e)}")
+
+# === Add Product Dialog ===
+class AddProductDialog(QDialog):
+    """Dialog for adding a new product (owner or admin view)."""
+
+    product_added = pyqtSignal()  # emitted after successful save
+
+    def __init__(self, parent_dashboard=None, user_role='Admin', current_user_id=None):
+        super().__init__(parent=parent_dashboard)
+        self.dashboard = parent_dashboard  # reference to Dashboard for helpers
+        self.user_role = user_role.lower()
+        self.current_user_id = current_user_id or 0
+        self.setWindowTitle("Add Product")
+        self.setFixedSize(700, 820)
+        self.setModal(True)
+
+        self._batch_sequence = 0  # will load lazily
+        self._last_batch_date = datetime.now().date()
+        self.uploaded_image_path = None
+        self.photo_uploaded = False
+
+        self.init_ui()
+
+    # --------------------------- UI helpers ---------------------------
+    def init_ui(self):
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(20, 20, 20, 20)
+        main_layout.setSpacing(15)
+
+        title = QLabel("➕ Add Product")
+        title.setFont(QFont("Arial", 20, QFont.Bold))
+        title.setAlignment(Qt.AlignCenter)
+        title.setStyleSheet("color:#2E7D32;")
+        main_layout.addWidget(title)
+
+        form_layout = QGridLayout()
+        form_layout.setHorizontalSpacing(15)
+        form_layout.setVerticalSpacing(10)
+
+        # Product name
+        form_layout.addWidget(QLabel("Product Name:"), 0, 0)
+        self.product_name_edit = QLineEdit()
+        form_layout.addWidget(self.product_name_edit, 0, 1, 1, 2)
+
+        # Description
+        form_layout.addWidget(QLabel("Description:"), 1, 0)
+        self.desc_edit = QTextEdit()
+        self.desc_edit.setFixedHeight(80)
+        form_layout.addWidget(self.desc_edit, 1, 1, 1, 2)
+
+        # Image upload
+        form_layout.addWidget(QLabel("Product Image:"), 2, 0)
+        img_hbox = QHBoxLayout()
+        self.img_label = QLabel("No Image")
+        self.img_label.setFixedSize(140, 140)
+        self.img_label.setStyleSheet("background:#eee;border:1px solid #ccc;border-radius:6px;color:#777;")
+        self.img_label.setAlignment(Qt.AlignCenter)
+        img_hbox.addWidget(self.img_label)
+        upload_btn = QPushButton("Upload")
+        upload_btn.clicked.connect(self.upload_image)
+        img_hbox.addWidget(upload_btn)
+        form_layout.addLayout(img_hbox, 2, 1, 1, 2)
+
+        # SKU
+        form_layout.addWidget(QLabel("SKU:"), 3, 0)
+        self.sku_edit = QLineEdit()
+        form_layout.addWidget(self.sku_edit, 3, 1)
+
+        # Arrival / Manufacture / Expiry dates
+        self.arrival_date_edit = self.create_date_edit()
+        self.mfg_date_edit = self.create_date_edit()
+        self.exp_date_edit = self.create_date_edit()
+
+        form_layout.addWidget(QLabel("Arrival Date:"), 4, 0)
+        form_layout.addWidget(self.arrival_date_edit, 4, 1)
+        form_layout.addWidget(QLabel("Manufacture Date:"), 5, 0)
+        form_layout.addWidget(self.mfg_date_edit, 5, 1)
+        form_layout.addWidget(QLabel("Expiry Date:"), 6, 0)
+        form_layout.addWidget(self.exp_date_edit, 6, 1)
+
+        # Rack location
+        form_layout.addWidget(QLabel("Rack Location:"), 7, 0)
+        self.rack_combo = QComboBox()
+        form_layout.addWidget(self.rack_combo, 7, 1)
+        self.load_available_rack_locations()
+
+        # Admin-only: owner & tester assignment
+        if self.user_role == 'admin' or self.user_role == 'superadmin':
+            form_layout.addWidget(QLabel("Assign Owner:"), 8, 0)
+            self.owner_combo = QComboBox()
+            form_layout.addWidget(self.owner_combo, 8, 1)
+            form_layout.addWidget(QLabel("Assign Tester:"), 9, 0)
+            self.tester_combo = QComboBox()
+            form_layout.addWidget(self.tester_combo, 9, 1)
+            self.load_owner_tester_lists()
+        else:
+            self.owner_combo = None
+            self.tester_combo = None
+
+        # Batch (read-only)
+        form_layout.addWidget(QLabel("Batch Code:"), 10, 0)
+        self.batch_edit = QLineEdit()
+        self.batch_edit.setReadOnly(True)
+        form_layout.addWidget(self.batch_edit, 10, 1)
+        self.update_batch_code()
+
+        main_layout.addLayout(form_layout)
+
+        # Save/Cancel buttons
+        btn_box = QHBoxLayout()
+        btn_box.addStretch()
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(self.reject)
+        save_btn = QPushButton("Save")
+        save_btn.clicked.connect(self.save_product)
+        for b in (cancel_btn, save_btn):
+            b.setStyleSheet("""QPushButton{background:#4CAF50;color:white;padding:8px 20px;border:none;border-radius:6px;font-weight:bold;}QPushButton:hover{background:#388E3C;}""")
+        btn_box.addWidget(cancel_btn)
+        btn_box.addWidget(save_btn)
+        btn_box.addStretch()
+        main_layout.addLayout(btn_box)
+
+    def create_date_edit(self):
+        de = QDateEdit()
+        de.setCalendarPopup(True)
+        de.setDisplayFormat("yyyy-MM-dd")
+        de.setDate(QDate.currentDate())
+        return de
+
+    # --------------------------- Data helpers ---------------------------
+    def load_available_rack_locations(self):
+        self.rack_combo.clear()
+        self.rack_combo.addItem("Select", None)
+        try:
+            conn = sqlite3.connect("testing_system.db")
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT rack_location_id, rack_location_name FROM racklocations
+                WHERE rack_location_id NOT IN (SELECT DISTINCT rack_location_id FROM products WHERE rack_location_id IS NOT NULL)
+                ORDER BY rack_location_name
+            """)
+            for rid, name in cur.fetchall():
+                self.rack_combo.addItem(name, rid)
+            conn.close()
+        except Exception as e:
+            print(f"Error loading racks: {e}")
+
+    def load_owner_tester_lists(self):
+        # owners (role_id 3) testers (role_id 4)
+        self.owner_combo.clear(); self.tester_combo.clear()
+        self.owner_combo.addItem("Select", None)
+        self.tester_combo.addItem("Select", None)
+        try:
+            conn = sqlite3.connect("testing_system.db"); cur = conn.cursor()
+            cur.execute("SELECT user_id, fullname, role_name FROM users u JOIN roles r ON u.role = r.role_id WHERE r.role_id=3 ORDER BY fullname")
+            for uid, fname, role_name in cur.fetchall():
+                display = f"{fname} ({role_name.title()})" if fname else f"User{uid} ({role_name.title()})"
+                self.owner_combo.addItem(display, uid)
+            cur.execute("SELECT user_id, fullname, role_name FROM users u JOIN roles r ON u.role = r.role_id WHERE r.role_id=4 ORDER BY fullname")
+            for uid, fname, role_name in cur.fetchall():
+                display = f"{fname} ({role_name.title()})" if fname else f"User{uid} ({role_name.title()})"
+                self.tester_combo.addItem(display, uid)
+            conn.close()
+        except Exception as e:
+            print(f"Error loading users list: {e}")
+
+    def load_batch_sequence(self):
+        # similar to ksOwner logic
+        try:
+            conn = sqlite3.connect("testing_system.db")
+            cur = conn.cursor()
+            cur.execute("CREATE TABLE IF NOT EXISTS BatchSequence (date TEXT PRIMARY KEY, last_sequence INTEGER DEFAULT 0)")
+            today = datetime.now().strftime("%Y-%m-%d")
+            cur.execute("SELECT last_sequence FROM BatchSequence WHERE date=?", (today,))
+            res = cur.fetchone()
+            conn.close()
+            return res[0] if res else 0
+        except Exception:
+            return 0
+
+    def save_batch_sequence(self):
+        try:
+            conn = sqlite3.connect("testing_system.db"); cur = conn.cursor()
+            today = datetime.now().strftime("%Y-%m-%d")
+            cur.execute("INSERT OR REPLACE INTO BatchSequence (date,last_sequence) VALUES (?,?)", (today, self._batch_sequence))
+            conn.commit(); conn.close()
+        except Exception as e:
+            print(f"Error saving batch seq: {e}")
+
+    def update_batch_code(self):
+        today = datetime.now().date()
+        if today != self._last_batch_date:
+            self._batch_sequence = 0
+            self._last_batch_date = today
+        else:
+            self._batch_sequence = self.load_batch_sequence()
+        batch_letter = chr(ord('A') + self._batch_sequence)
+        code = f"B{today.strftime('%Y%m%d')}{batch_letter}"
+        self.batch_edit.setText(code)
+
+    # --------------------------- actions ---------------------------
+    def upload_image(self):
+        fname, _ = QFileDialog.getOpenFileName(self, "Select Image", "", "Images (*.png *.jpg *.jpeg *.bmp)")
+        if fname:
+            pix = QPixmap(fname)
+            if not pix.isNull():
+                self.img_label.setPixmap(pix.scaled(140, 140, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+                self.img_label.setText("")
+                self.uploaded_image_path = fname
+                self.photo_uploaded = True
+
+    def validate(self):
+        if not self.product_name_edit.text().strip():
+            QMessageBox.warning(self, "Validation", "Product name required"); return False
+        if not self.desc_edit.toPlainText().strip():
+            QMessageBox.warning(self, "Validation", "Description required"); return False
+        if not self.photo_uploaded:
+            QMessageBox.warning(self, "Validation", "Please upload product image"); return False
+        if not self.sku_edit.text().strip():
+            QMessageBox.warning(self, "Validation", "SKU required"); return False
+        if self.rack_combo.currentData() is None:
+            QMessageBox.warning(self, "Validation", "Select rack location"); return False
+        if self.user_role in ('admin', 'superadmin'):
+            if self.owner_combo.currentData() is None or self.tester_combo.currentData() is None:
+                QMessageBox.warning(self, "Validation", "Select owner and tester"); return False
+        return True
+
+    def save_product(self):
+        if not self.validate():
+            return
+        # generate batch letter increment
+        self._batch_sequence += 1
+        self.save_batch_sequence()
+        batch_code = self.batch_edit.text()
+
+        prod = {
+            'owner_id': self.owner_combo.currentData() if self.owner_combo else self.current_user_id,
+            'tester_id': self.tester_combo.currentData() if self.tester_combo else None,
+            'product_name': self.product_name_edit.text().strip(),
+            'product_desc': self.desc_edit.toPlainText().strip(),
+            'product_image': self.uploaded_image_path,
+            'arrival_date': self.arrival_date_edit.date().toString('yyyy-MM-dd'),
+            'manufacture_date': self.mfg_date_edit.date().toString('yyyy-MM-dd'),
+            'expired_date': self.exp_date_edit.date().toString('yyyy-MM-dd'),
+            'rack_location_id': self.rack_combo.currentData(),
+            'batch': batch_code,
+            'sku': self.sku_edit.text().strip()
+        }
+        try:
+            conn = sqlite3.connect("testing_system.db"); cur = conn.cursor()
+            status_value = 'approved' if self.user_role in ('admin', 'superadmin') else 'pending'
+            cur.execute("""
+                INSERT INTO products (owner_id, tester_id, product_name, product_desc, product_image, arrival_date,
+                    manufacture_date, expired_date, location, rack_location_id, batch, sku, status)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?, ?)
+            """, (
+                prod['owner_id'], prod['tester_id'], prod['product_name'], prod['product_desc'], prod['product_image'],
+                prod['arrival_date'], prod['manufacture_date'], prod['expired_date'], self.rack_combo.currentText(),
+                prod['rack_location_id'], prod['batch'], prod['sku'], status_value
+            ))
+            product_id = cur.lastrowid
+
+            # If admin, generate barcode immediately
+            if self.user_role in ('admin', 'superadmin'):
+                try:
+                    import random, string
+                    import barcode
+                    from barcode.writer import ImageWriter
+                    code_val = ''.join(random.choices(string.digits, k=12))
+                    barcode_class = barcode.get_barcode_class('code128')
+                    code128 = barcode_class(code_val, writer=ImageWriter())
+                    os.makedirs('barcodes', exist_ok=True)
+                    file_base = os.path.join('barcodes', f"{prod['sku']}_{code_val}")
+                    code128.save(file_base)
+                    img_path = f"{file_base}.png"
+                    cur.execute("UPDATE products SET barcode=?, barcode_image=? WHERE product_id=?", (code_val, img_path, product_id))
+                    conn.commit()
+                except Exception as be:
+                    print(f"Barcode generation failed: {be}")
+
+            # If admin assigns tester, create assignment record
+            if self.user_role in ('admin', 'superadmin') and prod['tester_id']:
+                cur.execute("""
+                    INSERT INTO product_tester_assignments (product_id, tester_id, assigned_by)
+                    VALUES (?,?,?)
+                """, (product_id, prod['tester_id'], self.current_user_id))
+            conn.commit()
+            conn.close()
+
+            # === EMAIL NOTIFY ===
+            if self.user_role in ('admin', 'superadmin') and self.dashboard:
+                subj = "New Product Assigned"
+                body_tpl = "Dear {fname},\n\nProduct {pname} (Batch {batch}) has been assigned to you for testing.\n\nRegards,\nMedical Testing System"
+
+                def fetch_email_fullname(uid):
+                    conn_f = sqlite3.connect("testing_system.db")
+                    res = conn_f.execute("SELECT email, fullname FROM users WHERE user_id=?", (uid,)).fetchone()
+                    conn_f.close()
+                    return res  # (email, fullname)
+
+                # owner
+                if prod['owner_id']:
+                    res = fetch_email_fullname(prod['owner_id'])
+                    if res and res[0]:
+                        email, fname = res
+                        body = body_tpl.format(fname=fname or 'User', pname=prod['product_name'], batch=prod['batch'])
+                        self.dashboard.send_actual_email(email, subj, body, fname)
+
+                # tester
+                if prod['tester_id']:
+                    res = fetch_email_fullname(prod['tester_id'])
+                    if res and res[0]:
+                        email, fname = res
+                        body = body_tpl.format(fname=fname or 'User', pname=prod['product_name'], batch=prod['batch'])
+                        self.dashboard.send_actual_email(email, subj, body, fname)
+
+            # ensure connection closed safely
+            try:
+                conn.close()
+            except Exception:
+                pass
+            QMessageBox.information(self, "Success", "Product saved successfully.")
+
+            self.product_added.emit()
+            self.accept()
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to save product: {e}")
+
+__all__ = [
+   "verify_user_login", "format_malaysia_time", "create_chat_tables",
+   "SuperAdminDialog", "SummaryCard", "ProductCardWithCheckbox",
+   "ProductCard", "EmailSettingsDialog", "UserManagementDialog",
+   "SystemSettingsDialog", "ExportReportsDialog",
+   "DatabaseMaintenanceDialog",
+   "ProductDetailDialog",
+   "AddProductDialog",
+   # add more names you moved here
+]
