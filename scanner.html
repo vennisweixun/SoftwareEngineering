@@ -1,0 +1,640 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Barcode Scanner - Medical System</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: Arial, sans-serif;
+            background: linear-gradient(135deg, #d6e0f5 0%, #f0f8ff 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 500px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 15px;
+            padding: 30px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.1);
+        }
+
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+
+        .header h1 {
+            color: #5D3A00;
+            font-size: 28px;
+            margin-bottom: 10px;
+        }
+
+        .header p {
+            color: #666;
+            font-size: 16px;
+        }
+
+        #scanner-container {
+            position: relative;
+            margin-bottom: 30px;
+            border-radius: 10px;
+            overflow: hidden;
+            background: #f0f0f0;
+        }
+
+        #video {
+            width: 100%;
+            height: 300px;
+            object-fit: cover;
+            display: block;
+        }
+
+        .scanner-overlay {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 200px;
+            height: 100px;
+            border: 3px solid #ff6b6b;
+            border-radius: 10px;
+            pointer-events: none;
+        }
+
+        .scanner-overlay::before {
+            content: '';
+            position: absolute;
+            top: -3px;
+            left: -3px;
+            right: -3px;
+            bottom: -3px;
+            border: 3px solid rgba(255, 107, 107, 0.3);
+            border-radius: 10px;
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0% { transform: scale(1); opacity: 1; }
+            50% { transform: scale(1.05); opacity: 0.7; }
+            100% { transform: scale(1); opacity: 1; }
+        }
+
+        .controls {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+
+        button {
+            background: #7094db;
+            color: white;
+            border: none;
+            padding: 15px 30px;
+            border-radius: 25px;
+            font-size: 16px;
+            font-weight: bold;
+            cursor: pointer;
+            margin: 5px;
+            transition: all 0.3s ease;
+            -webkit-appearance: none; /* Remove iOS button styling */
+            -moz-appearance: none;
+            appearance: none;
+        }
+
+        button:hover {
+            background: #5a7bc4;
+            transform: translateY(-2px);
+        }
+
+        button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .result {
+            background: #f8f9fa;
+            border-radius: 10px;
+            padding: 20px;
+            margin-top: 20px;
+            display: none;
+        }
+
+        .result.success {
+            border-left: 5px solid #28a745;
+            background: #d4edda;
+        }
+
+        .result.error {
+            border-left: 5px solid #dc3545;
+            background: #f8d7da;
+        }
+
+        .product-info {
+            margin-top: 15px;
+        }
+
+        .product-info h3 {
+            color: #5D3A00;
+            margin-bottom: 10px;
+        }
+
+        .product-info p {
+            margin: 5px 0;
+            color: #333;
+        }
+
+        .product-image {
+            max-width: 150px;
+            height: auto;
+            border-radius: 8px;
+            margin: 10px 0;
+        }
+
+        .manual-input {
+            margin-top: 20px;
+            padding: 20px;
+            background: #e8f5e8;
+            border: 2px solid #28a745;
+            border-radius: 10px;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+        }
+
+        .manual-input h3 {
+            color: #155724;
+            margin-bottom: 15px;
+            font-size: 18px;
+        }
+
+        .manual-input .highlight {
+            background: #d4edda;
+            padding: 10px;
+            border-radius: 5px;
+            margin-bottom: 15px;
+            border-left: 4px solid #28a745;
+            font-weight: bold;
+            color: #155724;
+        }
+
+        input[type="text"] {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #ddd;
+            border-radius: 8px;
+            font-size: 16px;
+            margin-bottom: 10px;
+        }
+
+        input[type="text"]:focus {
+            outline: none;
+            border-color: #7094db;
+        }
+
+        .status {
+            text-align: center;
+            margin: 15px 0;
+            font-weight: bold;
+        }
+
+        .status.scanning {
+            color: #007bff;
+        }
+
+        .status.found {
+            color: #28a745;
+        }
+
+        .status.error {
+            color: #dc3545;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>📱 Barcode Scanner</h1>
+            <p>Point your camera at a barcode to scan product information</p>
+        </div>
+
+        <div id="scanner-container">
+            <video id="video" autoplay playsinline></video>
+            <div class="scanner-overlay"></div>
+        </div>
+
+        <div class="controls">
+            <button id="start-btn" onclick="startScanner()">📷 Start Camera</button>
+            <button id="stop-btn" onclick="stopScanner()" disabled>⏹️ Stop Camera</button>
+            <button id="permission-btn" onclick="requestCameraPermission()" style="display:none;">🔓 Allow Camera Access</button>
+        </div>
+
+        <div id="status" class="status"></div>
+
+        <div id="result" class="result"></div>
+
+        <div class="manual-input">
+            <div class="highlight">
+                ✅ Manual Entry Always Works - No Camera Needed!
+            </div>
+            <h3>📝 Manual Barcode Entry</h3>
+            <p style="color: #666; margin-bottom: 15px;">Type or paste your barcode number below:</p>
+            <input type="text" id="manual-barcode" placeholder="Enter barcode manually (e.g., 123456789012)..." maxlength="20">
+            <button onclick="searchManualBarcode()">🔍 Search Product</button>
+        </div>
+    </div>
+
+    <!-- Include QuaggaJS for barcode scanning -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/quagga/0.12.1/quagga.min.js"></script>
+    
+    <script>
+        let scanning = false;
+        let currentStream = null;
+
+                function startScanner() {
+            const video = document.getElementById('video');
+            const startBtn = document.getElementById('start-btn');
+            const stopBtn = document.getElementById('stop-btn');
+            const status = document.getElementById('status');
+
+            status.textContent = 'Starting camera...';
+            status.className = 'status scanning';
+
+            // Check if browser supports camera
+            if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                status.textContent = 'Camera not supported on this device/browser';
+                status.className = 'status error';
+                return;
+            }
+
+            // Camera constraints - try both mobile and desktop
+            const constraints = {
+                video: {
+                    facingMode: { ideal: 'environment' }, // Prefer back camera
+                    width: { ideal: 1280, min: 640 },
+                    height: { ideal: 720, min: 480 }
+                },
+                audio: false
+            };
+
+            navigator.mediaDevices.getUserMedia(constraints)
+                .then(function(stream) {
+                    console.log('Camera stream obtained');
+                    currentStream = stream;
+                    video.srcObject = stream;
+                    
+                    video.onloadedmetadata = function() {
+                        video.play();
+                        startBtn.disabled = true;
+                        stopBtn.disabled = false;
+                        scanning = true;
+                        
+                        status.textContent = 'Camera ready - Point at barcode';
+                        status.className = 'status scanning';
+                        
+                        // Wait a bit for video to start, then initialize Quagga
+                        setTimeout(() => {
+                            initQuagga();
+                        }, 500);
+                    };
+                })
+                .catch(function(error) {
+                    console.error('Camera error:', error);
+                    
+                    if (error.name === 'NotAllowedError') {
+                        status.textContent = 'Camera permission denied. Click "Allow Camera Access" to grant permission.';
+                        document.getElementById('permission-btn').style.display = 'inline-block';
+                    } else if (error.name === 'NotFoundError') {
+                        status.textContent = 'No camera found on this device.';
+                    } else if (error.name === 'NotReadableError') {
+                        status.textContent = 'Camera is already in use by another application.';
+                    } else {
+                        status.textContent = 'Camera access failed: ' + error.message;
+                    }
+                    
+                    status.className = 'status error';
+                    startBtn.disabled = false;
+                    stopBtn.disabled = true;
+                });
+        }
+
+        function stopScanner() {
+            const video = document.getElementById('video');
+            const startBtn = document.getElementById('start-btn');
+            const stopBtn = document.getElementById('stop-btn');
+            const status = document.getElementById('status');
+
+            scanning = false;
+            
+            // Stop Quagga
+            if (typeof Quagga !== 'undefined') {
+                Quagga.stop();
+            }
+            
+            // Stop video stream
+            if (currentStream) {
+                currentStream.getTracks().forEach(track => {
+                    track.stop();
+                });
+                currentStream = null;
+            }
+            
+            if (video.srcObject) {
+                video.srcObject = null;
+            }
+
+            startBtn.disabled = false;
+            stopBtn.disabled = true;
+            
+            status.textContent = 'Camera stopped';
+            status.className = 'status';
+        }
+
+        function initQuagga() {
+            const video = document.getElementById('video');
+            const status = document.getElementById('status');
+            
+            console.log('Initializing Quagga...');
+            
+            Quagga.init({
+                inputStream: {
+                    name: "Live",
+                    type: "LiveStream",
+                    target: video,
+                    constraints: {
+                        width: { min: 640, ideal: 1280 },
+                        height: { min: 480, ideal: 720 },
+                        facingMode: "environment",
+                        aspectRatio: { min: 1, max: 2 }
+                    }
+                },
+                locator: {
+                    patchSize: "medium",
+                    halfSample: true
+                },
+                numOfWorkers: 2,
+                frequency: 10,
+                decoder: {
+                    readers: [
+                        "code_128_reader",
+                        "ean_reader",
+                        "ean_8_reader",
+                        "code_39_reader",
+                        "code_39_vin_reader",
+                        "codabar_reader",
+                        "upc_reader",
+                        "upc_e_reader",
+                        "i2of5_reader"
+                    ]
+                },
+                locate: true
+            }, function(err) {
+                if (err) {
+                    console.error('Quagga initialization failed:', err);
+                    status.textContent = 'Barcode scanner initialization failed. Camera works but scanning disabled.';
+                    status.className = 'status error';
+                    return;
+                }
+                
+                console.log("Quagga initialization finished. Ready to scan!");
+                Quagga.start();
+                
+                status.textContent = 'Scanner ready - Point camera at barcode';
+                status.className = 'status scanning';
+            });
+
+            // Listen for successful barcode detection
+            Quagga.onDetected(function(data) {
+                if (scanning) {
+                    const barcode = data.codeResult.code;
+                    console.log('Barcode detected:', barcode);
+                    
+                    // Pause scanning briefly to prevent multiple detections
+                    scanning = false;
+                    
+                    status.textContent = 'Barcode found: ' + barcode;
+                    status.className = 'status found';
+                    
+                    // Search for product
+                    searchProduct(barcode);
+                    
+                    // Re-enable scanning after 3 seconds
+                    setTimeout(() => {
+                        if (document.getElementById('stop-btn').disabled === false) {
+                            scanning = true;
+                            status.textContent = 'Scanner ready - Point camera at barcode';
+                            status.className = 'status scanning';
+                        }
+                    }, 3000);
+                }
+            });
+        }
+
+        function searchProduct(barcode) {
+            const resultDiv = document.getElementById('result');
+            
+            resultDiv.innerHTML = '<p>Searching for product...</p>';
+            resultDiv.style.display = 'block';
+            resultDiv.className = 'result';
+
+            fetch('/scan', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ barcode: barcode })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    displayProduct(data.product);
+                } else {
+                    displayError(data.error || 'Product not found');
+                }
+            })
+            .catch(error => {
+                console.error('Search error:', error);
+                displayError('Search failed. Please try again.');
+            });
+        }
+
+        function displayProduct(product) {
+            const resultDiv = document.getElementById('result');
+            
+            let imageHtml = '';
+            if (product.product_image) {
+                imageHtml = `<img src="/images/${product.product_image}" alt="${product.product_name}" class="product-image" onerror="this.style.display='none'">`;
+            }
+
+            resultDiv.innerHTML = `
+                <div class="product-info">
+                    <h3>✅ Product Found!</h3>
+                    ${imageHtml}
+                    <p><strong>Name:</strong> ${product.product_name}</p>
+                    <p><strong>SKU:</strong> ${product.sku}</p>
+                    <p><strong>Batch:</strong> ${product.batch}</p>
+                    <p><strong>Branch:</strong> ${product.branch}</p>
+                    <p><strong>Location:</strong> ${product.location}</p>
+                    <p><strong>Manufacture Date:</strong> ${product.manufacture_date}</p>
+                    <p><strong>Expiry Date:</strong> ${product.expired_date}</p>
+                    <p><strong>Description:</strong> ${product.description}</p>
+                    <p><strong>Owner:</strong> ${product.owner}</p>
+                </div>
+            `;
+            resultDiv.className = 'result success';
+            resultDiv.style.display = 'block';
+        }
+
+        function displayError(message) {
+            const resultDiv = document.getElementById('result');
+            resultDiv.innerHTML = `<p><strong>❌ Error:</strong> ${message}</p>`;
+            resultDiv.className = 'result error';
+            resultDiv.style.display = 'block';
+        }
+
+        function searchManualBarcode() {
+            const manualInput = document.getElementById('manual-barcode');
+            const barcode = manualInput.value.trim();
+            
+            if (barcode) {
+                document.getElementById('status').textContent = 'Searching manually entered barcode...';
+                document.getElementById('status').className = 'status scanning';
+                searchProduct(barcode);
+            } else {
+                alert('Please enter a barcode');
+            }
+        }
+
+        async function requestCameraPermission() {
+            const status = document.getElementById('status');
+            const permissionBtn = document.getElementById('permission-btn');
+            
+            try {
+                status.textContent = 'Requesting camera permission...';
+                status.className = 'status scanning';
+                
+                const stream = await navigator.mediaDevices.getUserMedia({ 
+                    video: { facingMode: 'environment' } 
+                });
+                
+                // Stop the stream immediately, we just wanted permission
+                stream.getTracks().forEach(track => track.stop());
+                
+                status.textContent = 'Camera permission granted! Try starting camera again.';
+                status.className = 'status found';
+                
+                permissionBtn.style.display = 'none';
+                document.getElementById('start-btn').disabled = false;
+                
+            } catch (error) {
+                console.error('Permission error:', error);
+                status.textContent = 'Camera permission denied. Please enable camera in browser settings.';
+                status.className = 'status error';
+            }
+        }
+
+        // Debug function to show camera info
+        async function debugCameraInfo() {
+            console.log('=== CAMERA DEBUG INFO ===');
+            console.log('User Agent:', navigator.userAgent);
+            console.log('Protocol:', location.protocol);
+            console.log('Hostname:', location.hostname);
+            
+            if (navigator.mediaDevices) {
+                try {
+                    const devices = await navigator.mediaDevices.enumerateDevices();
+                    const videoDevices = devices.filter(device => device.kind === 'videoinput');
+                    console.log('Video devices found:', videoDevices.length);
+                    videoDevices.forEach((device, index) => {
+                        console.log(`Camera ${index + 1}:`, device.label || 'Unknown Camera', device.deviceId);
+                    });
+                } catch (err) {
+                    console.log('Error enumerating devices:', err);
+                }
+            } else {
+                console.log('MediaDevices not supported');
+            }
+            console.log('=========================');
+        }
+
+        // Check camera support and permissions on page load
+        window.addEventListener('load', function() {
+            const status = document.getElementById('status');
+            const permissionBtn = document.getElementById('permission-btn');
+            const startBtn = document.getElementById('start-btn');
+            
+            // Run debug info
+            debugCameraInfo();
+            
+            // Detect mobile Chrome specifically
+            const isMobileChrome = /Chrome/.test(navigator.userAgent) && /Mobile/.test(navigator.userAgent);
+            const isHTTP = location.protocol === 'http:';
+            const isLocalhost = location.hostname === 'localhost' || location.hostname === '127.0.0.1' || location.hostname === '192.168.1.7';
+            
+            console.log('Browser detection:', {
+                isMobileChrome,
+                isHTTP,
+                isLocalhost,
+                protocol: location.protocol,
+                hostname: location.hostname
+            });
+            
+            if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                if (isMobileChrome && isHTTP && !isLocalhost) {
+                    status.innerHTML = `
+                        <div style="text-align: left; padding: 10px;">
+                            <strong>📱 Chrome Mobile Camera Issue</strong><br>
+                            Chrome blocks camera on HTTP connections.<br><br>
+                            <strong>Solutions:</strong><br>
+                            1. Use manual barcode entry below ⬇️<br>
+                            2. Or try Firefox/Safari browser<br>
+                            3. Or ask admin to enable HTTPS
+                        </div>
+                    `;
+                } else {
+                    status.textContent = '⚠️ Camera not supported on this browser. Use manual entry below.';
+                }
+                status.className = 'status error';
+                startBtn.disabled = true;
+                return;
+            }
+            
+            // Check if we're on HTTP (not HTTPS) which might block camera
+            if (isHTTP && !isLocalhost) {
+                if (isMobileChrome) {
+                    status.innerHTML = `
+                        <div style="text-align: left; padding: 10px;">
+                            <strong>🔒 HTTPS Required for Camera</strong><br>
+                            Chrome mobile requires secure connection.<br><br>
+                            <strong>Try this:</strong><br>
+                            1. Use manual entry below (always works) ⬇️<br>
+                            2. Or try Firefox/Safari browser<br>
+                            3. Camera button might still work - try it!
+                        </div>
+                    `;
+                    status.className = 'status error';
+                    // Don't disable button completely, let them try
+                } else {
+                    status.textContent = '⚠️ Camera may require HTTPS. Use manual entry if camera fails.';
+                    status.className = 'status error';
+                }
+            } else {
+                status.textContent = 'Ready to scan! Tap "Start Camera" or use manual entry below.';
+            }
+        });
+
+        // Allow Enter key for manual search
+        document.getElementById('manual-barcode').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                searchManualBarcode();
+            }
+        });
+    </script>
+</body>
+</html> 
