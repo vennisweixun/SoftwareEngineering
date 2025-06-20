@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Product Not Found - Barcode Scanner</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: Arial, sans-serif;
+            background: linear-gradient(135deg, #d6e0f5 0%, #f0f8ff 100%);
+            min-height: 100vh;
+            padding: 20px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .container {
+            max-width: 500px;
+            background: white;
+            border-radius: 15px;
+            padding: 40px 30px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.1);
+            text-align: center;
+        }
+
+        .icon {
+            font-size: 80px;
+            margin-bottom: 20px;
+        }
+
+        h1 {
+            color: #5D3A00;
+            font-size: 32px;
+            margin-bottom: 15px;
+        }
+
+        .message {
+            color: #666;
+            font-size: 18px;
+            line-height: 1.6;
+            margin-bottom: 30px;
+        }
+
+        .reasons {
+            background: #fff3cd;
+            border: 1px solid #ffeaa7;
+            border-radius: 10px;
+            padding: 20px;
+            margin-bottom: 30px;
+            text-align: left;
+        }
+
+        .reasons h3 {
+            color: #856404;
+            margin-bottom: 15px;
+            text-align: center;
+        }
+
+        .reasons ul {
+            list-style-type: none;
+            padding: 0;
+        }
+
+        .reasons li {
+            margin-bottom: 8px;
+            padding-left: 20px;
+            position: relative;
+            color: #856404;
+        }
+
+        .reasons li:before {
+            content: "•";
+            position: absolute;
+            left: 0;
+            font-weight: bold;
+        }
+
+        .back-button {
+            display: inline-block;
+            padding: 15px 30px;
+            background: #7094db;
+            color: white;
+            text-decoration: none;
+            border-radius: 25px;
+            font-weight: bold;
+            font-size: 16px;
+            transition: all 0.3s ease;
+            margin: 10px;
+        }
+
+        .back-button:hover {
+            background: #5a7bc4;
+            transform: translateY(-2px);
+        }
+
+        .secondary-button {
+            background: #6c757d;
+        }
+
+        .secondary-button:hover {
+            background: #545b62;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="icon">❌</div>
+        <h1>Product Not Found</h1>
+        
+        <div class="message">
+            Sorry, we couldn't find a product with the scanned barcode in our database.
+        </div>
+
+        <div class="reasons">
+            <h3>Possible reasons:</h3>
+            <ul>
+                <li>The barcode doesn't exist in our system</li>
+                <li>The product hasn't been approved yet</li>
+                <li>The barcode was scanned incorrectly</li>
+                <li>The product may have been removed from the system</li>
+            </ul>
+        </div>
+
+        <a href="/" class="back-button">🔙 Try Again</a>
+        <a href="/" class="back-button secondary-button">📱 Back to Scanner</a>
+    </div>
+</body>
+</html> 
