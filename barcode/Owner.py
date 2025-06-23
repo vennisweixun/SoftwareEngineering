@@ -169,7 +169,7 @@ def get_all_chat_users(current_username):
 
         # First, check if the testing_system.db exists (from Chat.py) to get proper roles
         try:
-            chat_conn = sqlite3.connect("testing_system.db")
+            chat_conn = sqlite3.connect("medical_system.db")
             chat_cursor = chat_conn.cursor()
             chat_cursor.execute("""
                 SELECT u.username, r.role_name, u.username as fullname 
