@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ product.product_name }} - Product Details</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: Arial, sans-serif;
+            background: linear-gradient(135deg, #d6e0f5 0%, #f0f8ff 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 600px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 15px;
+            padding: 30px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.1);
+        }
+
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+            padding-bottom: 20px;
+            border-bottom: 2px solid #d6e0f5;
+        }
+
+        .header h1 {
+            color: #5D3A00;
+            font-size: 28px;
+            margin-bottom: 10px;
+        }
+
+        .product-image {
+            width: 200px;
+            height: 200px;
+            object-fit: cover;
+            border-radius: 15px;
+            margin: 20px auto;
+            display: block;
+            border: 3px solid #d6e0f5;
+        }
+
+        .product-details {
+            margin-top: 30px;
+        }
+
+        .detail-row {
+            display: flex;
+            margin-bottom: 15px;
+            padding: 10px;
+            background: #f8f9fa;
+            border-radius: 8px;
+            border-left: 4px solid #7094db;
+        }
+
+        .detail-label {
+            font-weight: bold;
+            color: #5D3A00;
+            min-width: 120px;
+            margin-right: 15px;
+        }
+
+        .detail-value {
+            color: #333;
+            flex: 1;
+        }
+
+        .description {
+            margin-top: 20px;
+            padding: 15px;
+            background: #e8f4fd;
+            border-radius: 10px;
+            border: 1px solid #b3d9ff;
+        }
+
+        .description h3 {
+            color: #5D3A00;
+            margin-bottom: 10px;
+        }
+
+        .description p {
+            color: #444;
+            line-height: 1.6;
+        }
+
+        .status-badge {
+            display: inline-block;
+            padding: 8px 16px;
+            border-radius: 20px;
+            font-weight: bold;
+            font-size: 14px;
+            text-transform: uppercase;
+        }
+
+        .status-approved {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+
+        .barcode-info {
+            margin-top: 25px;
+            padding: 15px;
+            background: #fff3cd;
+            border-radius: 10px;
+            border: 1px solid #ffeaa7;
+            text-align: center;
+        }
+
+        .barcode-info h4 {
+            color: #856404;
+            margin-bottom: 8px;
+        }
+
+        .barcode-value {
+            font-family: 'Courier New', monospace;
+            font-size: 18px;
+            font-weight: bold;
+            color: #5D3A00;
+            background: white;
+            padding: 8px 12px;
+            border-radius: 5px;
+            border: 1px solid #ddd;
+            display: inline-block;
+        }
+
+        .back-button {
+            display: block;
+            width: 200px;
+            margin: 30px auto 0;
+            padding: 15px;
+            background: #7094db;
+            color: white;
+            text-decoration: none;
+            text-align: center;
+            border-radius: 25px;
+            font-weight: bold;
+            transition: all 0.3s ease;
+        }
+
+        .back-button:hover {
+            background: #5a7bc4;
+            transform: translateY(-2px);
+        }
+
+        .expiry-warning {
+            margin-top: 15px;
+            padding: 12px;
+            border-radius: 8px;
+            font-weight: bold;
+            text-align: center;
+        }
+
+        .expiry-expired {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+
+        .expiry-soon {
+            background: #fff3cd;
+            color: #856404;
+            border: 1px solid #ffeaa7;
+        }
+
+        .expiry-good {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>📦 Product Details</h1>
+            <div class="status-badge status-approved">✅ Approved Product</div>
+        </div>
+
+        {% if product.product_image %}
+        <img src="/images/{{ product.product_image }}" alt="{{ product.product_name }}" class="product-image" onerror="this.style.display='none'">
+        {% endif %}
+
+        <div class="product-details">
+            <div class="detail-row">
+                <div class="detail-label">Product Name:</div>
+                <div class="detail-value">{{ product.product_name }}</div>
+            </div>
+
+            <div class="detail-row">
+                <div class="detail-label">SKU:</div>
+                <div class="detail-value">{{ product.sku }}</div>
+            </div>
+
+            <div class="detail-row">
+                <div class="detail-label">Batch:</div>
+                <div class="detail-value">{{ product.batch }}</div>
+            </div>
+
+            <div class="detail-row">
+                <div class="detail-label">Branch ID:</div>
+                <div class="detail-value">{{ product.branch }}</div>
+            </div>
+
+            <div class="detail-row">
+                <div class="detail-label">Location:</div>
+                <div class="detail-value">{{ product.location }}</div>
+            </div>
+
+            <div class="detail-row">
+                <div class="detail-label">Owner:</div>
+                <div class="detail-value">{{ product.owner }}</div>
+            </div>
+
+            <div class="detail-row">
+                <div class="detail-label">Manufacture Date:</div>
+                <div class="detail-value">{{ product.manufacture_date }}</div>
+            </div>
+
+            <div class="detail-row">
+                <div class="detail-label">Arrival Date:</div>
+                <div class="detail-value">{{ product.arrival_date }}</div>
+            </div>
+
+            <div class="detail-row">
+                <div class="detail-label">Expiry Date:</div>
+                <div class="detail-value">{{ product.expired_date }}</div>
+            </div>
+        </div>
+
+        <!-- Check expiry status -->
+        <div id="expiry-warning"></div>
+
+        {% if product.description %}
+        <div class="description">
+            <h3>📝 Description</h3>
+            <p>{{ product.description }}</p>
+        </div>
+        {% endif %}
+
+        <div class="barcode-info">
+            <h4>🏷️ Barcode</h4>
+            <div class="barcode-value">{{ product.barcode }}</div>
+        </div>
+
+        <a href="/" class="back-button">🔙 Back to Scanner</a>
+    </div>
+
+    <script>
+        // Check expiry date and show warning if needed
+        function checkExpiryDate() {
+            const expiryDate = new Date('{{ product.expired_date }}');
+            const today = new Date();
+            const warningDiv = document.getElementById('expiry-warning');
+            
+            // Calculate days until expiry
+            const timeDiff = expiryDate.getTime() - today.getTime();
+            const daysDiff = Math.ceil(timeDiff / (1000 * 3600 * 24));
+            
+            if (daysDiff < 0) {
+                // Expired
+                warningDiv.innerHTML = '⚠️ This product has EXPIRED!';
+                warningDiv.className = 'expiry-warning expiry-expired';
+            } else if (daysDiff <= 30) {
+                // Expires soon
+                warningDiv.innerHTML = `⚠️ This product expires in ${daysDiff} days`;
+                warningDiv.className = 'expiry-warning expiry-soon';
+            } else {
+                // Good
+                warningDiv.innerHTML = `✅ Product is fresh (expires in ${daysDiff} days)`;
+                warningDiv.className = 'expiry-warning expiry-good';
+            }
+        }
+
+        // Run expiry check when page loads
+        document.addEventListener('DOMContentLoaded', checkExpiryDate);
+    </script>
+</body>
+</html> 
