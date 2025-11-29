@@ -1,0 +1,24 @@
+import sys
+
+from PyQt5.QtWidgets import QApplication
+
+# Re-export the main Dashboard class from the refactored implementation
+from newdashboard_main import Dashboard  # noqa: F401
+
+# Pull in any helper symbols that other modules might expect to find on the
+# original newdashboard module.  They all live in `newdashboard_extras` now.
+from newdashboard_extras import *   # noqa: F401,F403
+
+__all__ = ["Dashboard"]
+
+
+def main() -> None:
+    """Launch the dashboard in stand-alone mode (for quick testing)."""
+    app = QApplication(sys.argv)
+    dashboard = Dashboard(user_role="Admin")  # default role; adjust as needed
+    dashboard.show()
+    sys.exit(app.exec_())
+
+
+if __name__ == "__main__":
+    main() 
