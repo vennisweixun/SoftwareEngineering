@@ -1,0 +1,1256 @@
+import sys
+import sqlite3
+import time
+import os
+from PyQt5.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QLabel, QLineEdit, QPushButton, QComboBox, QMessageBox, QFrame,
+    QFormLayout, QSizePolicy, QSpacerItem
+)
+from PyQt5.QtCore import Qt, pyqtSignal
+from PyQt5.QtGui import QFont, QPalette, QColor
+
+# Import the Dashboard from newdashboard.py
+try:
+    from newdashboard import Dashboard
+except ImportError:
+    print("⚠️  Warning: newdashboard.py not found. Dashboard functionality will be limited.")
+    Dashboard = None
+
+class OwnerWindow(QMainWindow):
+    """Simple Owner Window for users with 'owner' role"""
+    def __init__(self, user_info):
+        super().__init__()
+        self.user_info = user_info
+        self.setupUI()
+        
+    def setupUI(self):
+        self.setWindowTitle(f"Owner Portal - Welcome {self.user_info.get('fullname', self.user_info.get('username', 'User'))}")
+        self.setGeometry(200, 200, 800, 600)
+        
+        # Set styling similar to the main application
+        self.setStyleSheet("""
+            QMainWindow {
+                background-color: #FFF5F5;
+            }
+            QLabel {
+                color: #333333;
+                font-family: 'Segoe UI', sans-serif;
+            }
+        """)
+        
+        # Central widget
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+        
+        # Main layout
+        layout = QVBoxLayout()
+        layout.setAlignment(Qt.AlignCenter)
+        
+        # Welcome message
+        welcome_label = QLabel("🏢 Owner Window")
+        welcome_label.setFont(QFont("Arial", 32, QFont.Bold))
+        welcome_label.setAlignment(Qt.AlignCenter)
+        welcome_label.setStyleSheet("color: #CC6666; margin: 20px;")
+        layout.addWidget(welcome_label)
+        
+        # User info
+        user_info_label = QLabel(f"Welcome, {self.user_info.get('fullname', self.user_info.get('username', 'User'))}!")
+        user_info_label.setFont(QFont("Arial", 18))
+        user_info_label.setAlignment(Qt.AlignCenter)
+        user_info_label.setStyleSheet("color: #666666; margin: 10px;")
+        layout.addWidget(user_info_label)
+        
+        # Role info
+        role_label = QLabel(f"Role: {self.user_info.get('role_name', 'Owner')}")
+        role_label.setFont(QFont("Arial", 14))
+        role_label.setAlignment(Qt.AlignCenter)
+        role_label.setStyleSheet("color: #888888; margin: 10px;")
+        layout.addWidget(role_label)
+        
+        # Placeholder content
+        content_label = QLabel("Owner-specific features will be implemented here.")
+        content_label.setFont(QFont("Arial", 14))
+        content_label.setAlignment(Qt.AlignCenter)
+        content_label.setStyleSheet("color: #999999; margin: 30px;")
+        layout.addWidget(content_label)
+        
+        # Logout button
+        logout_btn = QPushButton("Logout")
+        logout_btn.setFixedSize(120, 40)
+        logout_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #CC6666;
+                color: white;
+                border: none;
+                border-radius: 8px;
+                font-size: 14px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #BB5555;
+            }
+        """)
+        logout_btn.clicked.connect(self.logout)
+        
+        # Center the logout button
+        logout_layout = QHBoxLayout()
+        logout_layout.addStretch()
+        logout_layout.addWidget(logout_btn)
+        logout_layout.addStretch()
+        layout.addLayout(logout_layout)
+        
+        central_widget.setLayout(layout)
+        
+        print(f"✓ Owner Window opened for user: {self.user_info.get('username')}")
+        
+    def logout(self):
+        """Handle logout"""
+        reply = QMessageBox.question(self, 'Logout', 'Are you sure you want to logout?',
+                                   QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        
+        if reply == QMessageBox.Yes:
+            print(f"✓ User '{self.user_info.get('username')}' logged out from Owner Window")
+            self.close()
+            
+            # Show the login window again
+            self.show_login_window()
+    
+    def show_login_window(self):
+        """Show the login window again"""
+        self.login_window = SignInSignUpWindow()
+        self.login_window.show()
+
+class TesterWindow(QMainWindow):
+    """Tester Window for users with 'tester' role"""
+    def __init__(self, user_info):
+        super().__init__()
+        self.user_info = user_info
+        self.setupUI()
+        
+    def setupUI(self):
+        self.setWindowTitle(f"Tester Portal - {self.user_info.get('fullname', self.user_info.get('username', 'User'))}")
+        self.setGeometry(150, 150, 900, 700)
+        
+        # Set styling with a blue theme for testers
+        self.setStyleSheet("""
+            QMainWindow {
+                background-color: #F0F8FF;
+            }
+            QLabel {
+                color: #333333;
+                font-family: 'Segoe UI', sans-serif;
+            }
+        """)
+        
+        # Central widget
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+        
+        # Main layout
+        layout = QVBoxLayout()
+        layout.setAlignment(Qt.AlignCenter)
+        
+        # Welcome message
+        welcome_label = QLabel("🧪 Tester Portal")
+        welcome_label.setFont(QFont("Arial", 32, QFont.Bold))
+        welcome_label.setAlignment(Qt.AlignCenter)
+        welcome_label.setStyleSheet("color: #2E86C1; margin: 20px;")
+        layout.addWidget(welcome_label)
+        
+        # User info
+        user_info_label = QLabel(f"Welcome, {self.user_info.get('fullname', self.user_info.get('username', 'User'))}!")
+        user_info_label.setFont(QFont("Arial", 18))
+        user_info_label.setAlignment(Qt.AlignCenter)
+        user_info_label.setStyleSheet("color: #566573; margin: 10px;")
+        layout.addWidget(user_info_label)
+        
+        # Role info
+        role_label = QLabel(f"Role: {self.user_info.get('role_name', 'Tester')}")
+        role_label.setFont(QFont("Arial", 14))
+        role_label.setAlignment(Qt.AlignCenter)
+        role_label.setStyleSheet("color: #85929E; margin: 10px;")
+        layout.addWidget(role_label)
+        
+        # Tester-specific features section
+        features_frame = QFrame()
+        features_frame.setStyleSheet("""
+            QFrame {
+                background-color: white;
+                border: 2px solid #AED6F1;
+                border-radius: 10px;
+                padding: 20px;
+                margin: 20px;
+            }
+        """)
+        features_layout = QVBoxLayout()
+        
+        features_title = QLabel("🔬 Tester Dashboard")
+        features_title.setFont(QFont("Arial", 20, QFont.Bold))
+        features_title.setAlignment(Qt.AlignCenter)
+        features_title.setStyleSheet("color: #2E86C1; margin-bottom: 15px;")
+        features_layout.addWidget(features_title)
+        
+        # Quick action buttons for testers
+        buttons_layout = QVBoxLayout()
+        
+        pending_tests_btn = QPushButton("📋 View Pending Tests")
+        pending_tests_btn.setFixedSize(250, 45)
+        pending_tests_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #3498DB;
+                color: white;
+                border: none;
+                border-radius: 8px;
+                font-size: 14px;
+                font-weight: bold;
+                margin: 5px;
+            }
+            QPushButton:hover {
+                background-color: #2E86C1;
+            }
+        """)
+        buttons_layout.addWidget(pending_tests_btn, alignment=Qt.AlignCenter)
+        
+        my_assignments_btn = QPushButton("📝 My Test Assignments")
+        my_assignments_btn.setFixedSize(250, 45)
+        my_assignments_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #5DADE2;
+                color: white;
+                border: none;
+                border-radius: 8px;
+                font-size: 14px;
+                font-weight: bold;
+                margin: 5px;
+            }
+            QPushButton:hover {
+                background-color: #3498DB;
+            }
+        """)
+        buttons_layout.addWidget(my_assignments_btn, alignment=Qt.AlignCenter)
+        
+        submit_results_btn = QPushButton("✅ Submit Test Results")
+        submit_results_btn.setFixedSize(250, 45)
+        submit_results_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #27AE60;
+                color: white;
+                border: none;
+                border-radius: 8px;
+                font-size: 14px;
+                font-weight: bold;
+                margin: 5px;
+            }
+            QPushButton:hover {
+                background-color: #229954;
+            }
+        """)
+        buttons_layout.addWidget(submit_results_btn, alignment=Qt.AlignCenter)
+        
+        features_layout.addLayout(buttons_layout)
+        
+        # Info text
+        info_label = QLabel("Tester-specific features and test management tools will be implemented here.")
+        info_label.setFont(QFont("Arial", 12))
+        info_label.setAlignment(Qt.AlignCenter)
+        info_label.setStyleSheet("color: #7B7D7D; margin: 15px;")
+        features_layout.addWidget(info_label)
+        
+        features_frame.setLayout(features_layout)
+        layout.addWidget(features_frame)
+        
+        # Logout button
+        logout_btn = QPushButton("Logout")
+        logout_btn.setFixedSize(120, 40)
+        logout_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #E74C3C;
+                color: white;
+                border: none;
+                border-radius: 8px;
+                font-size: 14px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #C0392B;
+            }
+        """)
+        logout_btn.clicked.connect(self.logout)
+        
+        # Center the logout button
+        logout_layout = QHBoxLayout()
+        logout_layout.addStretch()
+        logout_layout.addWidget(logout_btn)
+        logout_layout.addStretch()
+        layout.addLayout(logout_layout)
+        
+        central_widget.setLayout(layout)
+        
+        print(f"✓ Tester Window opened for user: {self.user_info.get('username')}")
+        
+    def logout(self):
+        """Handle logout"""
+        reply = QMessageBox.question(self, 'Logout', 'Are you sure you want to logout?',
+                                   QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        
+        if reply == QMessageBox.Yes:
+            print(f"✓ User '{self.user_info.get('username')}' logged out from Tester Portal")
+            self.close()
+            
+            # Show the login window again
+            self.show_login_window()
+    
+    def show_login_window(self):
+        """Show the login window again"""
+        self.login_window = SignInSignUpWindow()
+        self.login_window.show()
+
+
+
+class BlurOverlay(QWidget):
+    """Semi-transparent overlay widget to create blur effect"""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setStyleSheet("""
+            background-color: rgba(255, 255, 255, 0.7);
+            border-radius: 0px;
+        """)
+        self.hide()
+
+class SignInSignUpWindow(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Medical Testing System - User Authentication")
+        self.setGeometry(100, 100, 1000, 600)
+        self.setMinimumSize(800, 500)
+        
+        # Store reference to opened windows
+        self.dashboard_window = None
+        self.owner_window = None
+        self.tester_window = None
+        
+        # Green theme colors for login side
+        self.green_colors = {
+            'primary': '#A8E6A3',      # Light green
+            'secondary': '#C8F7C5',    # Lighter green
+            'accent': '#81C784',       # Medium green
+            'dark': '#4CAF50',         # Dark green
+            'text': '#333333',         # Dark gray
+            'background': '#F1F8E9',   # Very light green
+            'white': '#FFFFFF',        # White
+            'error': '#FF4444'         # Error red
+        }
+        
+        # Orange theme colors for signup side
+        self.orange_colors = {
+            'primary': '#FFCC80',      # Light orange
+            'secondary': '#FFE0B2',    # Lighter orange
+            'accent': '#FFB74D',       # Medium orange
+            'dark': '#FF9800',         # Dark orange
+            'text': '#333333',         # Dark gray
+            'background': '#FFF8E1',   # Very light orange
+            'white': '#FFFFFF',        # White
+            'error': '#FF4444'         # Error red
+        }
+        
+        self.setupUI()
+        self.applyStyles()
+        
+        # Make the window full screen
+        self.showMaximized()
+        
+    def setupUI(self):
+        # Central widget
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+        
+        # Main horizontal layout
+        self.main_layout = QHBoxLayout()
+        central_widget.setLayout(self.main_layout)
+        
+        # Sign In Section (75% initially)
+        self.signin_widget = self.createSignInWidget()
+        self.main_layout.addWidget(self.signin_widget, 75)
+        
+        # Sign Up Button Section (25% initially)
+        self.signup_button_widget = self.createSignUpButtonWidget()
+        self.main_layout.addWidget(self.signup_button_widget, 25)
+        
+        # Sign Up Form (hidden initially)
+        self.signup_widget = self.createSignUpWidget()
+        self.signup_widget.hide()
+        
+        # Back to Sign In Button Widget (hidden initially)
+        self.back_button_widget = self.createBackButtonWidget()
+        self.back_button_widget.hide()
+        
+    def createSignInWidget(self):
+        widget = QFrame()
+        widget.setObjectName("signinFrame")
+        layout = QVBoxLayout()
+        
+        # Title
+        title = QLabel("Sign In")
+        title.setObjectName("title")
+        title.setAlignment(Qt.AlignCenter)
+        layout.addItem(QSpacerItem(20, 40, QSizePolicy.Minimum, QSizePolicy.Expanding))
+        layout.addWidget(title)
+        
+        # Subtitle
+        subtitle = QLabel("Welcome back to Medical Testing System")
+        subtitle.setObjectName("subtitle")
+        subtitle.setAlignment(Qt.AlignCenter)
+        layout.addWidget(subtitle)
+        
+        layout.addItem(QSpacerItem(20, 30, QSizePolicy.Minimum, QSizePolicy.Fixed))
+        
+        # Form container
+        form_container = QWidget()
+        form_container.setMaximumWidth(400)
+        form_container.setObjectName("formContainer")
+        form_layout = QFormLayout()
+        
+        # Username field
+        self.signin_username = QLineEdit()
+        self.signin_username.setObjectName("inputField")
+        self.signin_username.setPlaceholderText("Enter your username")
+        form_layout.addRow("Username *", self.signin_username)
+        
+        # Password field
+        self.signin_password = QLineEdit()
+        self.signin_password.setObjectName("inputField")
+        self.signin_password.setEchoMode(QLineEdit.Password)
+        self.signin_password.setPlaceholderText("Enter your password (numbers only)")
+        self.signin_password.returnPressed.connect(self.signIn)
+        form_layout.addRow("Password *", self.signin_password)
+        
+        form_container.setLayout(form_layout)
+        
+        # Center the form
+        form_wrapper = QHBoxLayout()
+        form_wrapper.addItem(QSpacerItem(40, 20, QSizePolicy.Expanding, QSizePolicy.Minimum))
+        form_wrapper.addWidget(form_container)
+        form_wrapper.addItem(QSpacerItem(40, 20, QSizePolicy.Expanding, QSizePolicy.Minimum))
+        
+        layout.addLayout(form_wrapper)
+        layout.addItem(QSpacerItem(20, 20, QSizePolicy.Minimum, QSizePolicy.Fixed))
+        
+        # Sign In button
+        signin_btn = QPushButton("Sign In")
+        signin_btn.setObjectName("primaryButton")
+        signin_btn.setMaximumWidth(200)
+        signin_btn.clicked.connect(self.signIn)
+        
+        btn_wrapper = QHBoxLayout()
+        btn_wrapper.addItem(QSpacerItem(40, 20, QSizePolicy.Expanding, QSizePolicy.Minimum))
+        btn_wrapper.addWidget(signin_btn)
+        btn_wrapper.addItem(QSpacerItem(40, 20, QSizePolicy.Expanding, QSizePolicy.Minimum))
+        
+        layout.addLayout(btn_wrapper)
+        layout.addItem(QSpacerItem(20, 40, QSizePolicy.Minimum, QSizePolicy.Expanding))
+        
+        widget.setLayout(layout)
+        return widget
+    
+    def createSignUpButtonWidget(self):
+        widget = QFrame()
+        widget.setObjectName("signupButtonFrame")
+        layout = QVBoxLayout()
+        
+        layout.addItem(QSpacerItem(20, 40, QSizePolicy.Minimum, QSizePolicy.Expanding))
+        
+        # Welcome message
+        welcome = QLabel("New User?")
+        welcome.setObjectName("welcomeText")
+        welcome.setAlignment(Qt.AlignCenter)
+        layout.addWidget(welcome)
+        
+        # Description
+        desc = QLabel("Create an account to access\nthe Medical Testing System")
+        desc.setObjectName("descText")
+        desc.setAlignment(Qt.AlignCenter)
+        layout.addWidget(desc)
+        
+        layout.addItem(QSpacerItem(20, 30, QSizePolicy.Minimum, QSizePolicy.Fixed))
+        
+        # Sign Up button
+        signup_btn = QPushButton("Sign Up")
+        signup_btn.setObjectName("secondaryButton")
+        signup_btn.setMaximumWidth(150)
+        signup_btn.clicked.connect(self.showSignUp)
+        
+        btn_wrapper = QHBoxLayout()
+        btn_wrapper.addItem(QSpacerItem(40, 20, QSizePolicy.Expanding, QSizePolicy.Minimum))
+        btn_wrapper.addWidget(signup_btn)
+        btn_wrapper.addItem(QSpacerItem(40, 20, QSizePolicy.Expanding, QSizePolicy.Minimum))
+        
+        layout.addLayout(btn_wrapper)
+        layout.addItem(QSpacerItem(20, 40, QSizePolicy.Minimum, QSizePolicy.Expanding))
+        
+        widget.setLayout(layout)
+        return widget
+    
+    def createSignUpWidget(self):
+        widget = QFrame()
+        widget.setObjectName("signupFrame")
+        layout = QVBoxLayout()
+        
+        # Title
+        title = QLabel("Create Account")
+        title.setObjectName("title")
+        title.setAlignment(Qt.AlignCenter)
+        layout.addWidget(title)
+        
+        # Subtitle
+        subtitle = QLabel("Join the Medical Testing System")
+        subtitle.setObjectName("subtitle")
+        subtitle.setAlignment(Qt.AlignCenter)
+        layout.addWidget(subtitle)
+        
+        layout.addItem(QSpacerItem(20, 20, QSizePolicy.Minimum, QSizePolicy.Fixed))
+        
+        # Form container
+        form_container = QWidget()
+        form_container.setMaximumWidth(500)
+        form_container.setObjectName("formContainer")
+        form_layout = QFormLayout()
+        
+        # Full Name
+        self.signup_fullname = QLineEdit()
+        self.signup_fullname.setObjectName("inputField")
+        self.signup_fullname.setPlaceholderText("Enter your full name")
+        form_layout.addRow("Full Name *", self.signup_fullname)
+        
+        # Username
+        self.signup_username = QLineEdit()
+        self.signup_username.setObjectName("inputField")
+        self.signup_username.setPlaceholderText("Choose a username")
+        form_layout.addRow("Username *", self.signup_username)
+        
+        # Password
+        self.signup_password = QLineEdit()
+        self.signup_password.setObjectName("inputField")
+        self.signup_password.setEchoMode(QLineEdit.Password)
+        self.signup_password.setPlaceholderText("Password (numbers only, min 4 digits)")
+        form_layout.addRow("Password *", self.signup_password)
+        
+        # Confirm Password
+        self.signup_confirm_password = QLineEdit()
+        self.signup_confirm_password.setObjectName("inputField")
+        self.signup_confirm_password.setEchoMode(QLineEdit.Password)
+        self.signup_confirm_password.setPlaceholderText("Confirm your password")
+        form_layout.addRow("Confirm Password *", self.signup_confirm_password)
+        
+        # Role
+        self.signup_role = QComboBox()
+        self.signup_role.setObjectName("comboBox")
+        self.signup_role.addItems(["Select Role", "Admin", "Owner", "Tester", "Super Admin"])
+        form_layout.addRow("Role *", self.signup_role)
+        
+        # Email
+        self.signup_email = QLineEdit()
+        self.signup_email.setObjectName("inputField")
+        self.signup_email.setPlaceholderText("Enter your email address")
+        form_layout.addRow("Email *", self.signup_email)
+        
+        # Phone
+        self.signup_phone = QLineEdit()
+        self.signup_phone.setObjectName("inputField")
+        self.signup_phone.setPlaceholderText("Enter your phone number")
+        form_layout.addRow("Phone Number *", self.signup_phone)
+        
+        form_container.setLayout(form_layout)
+        
+        # Center the form
+        form_wrapper = QHBoxLayout()
+        form_wrapper.addItem(QSpacerItem(40, 20, QSizePolicy.Expanding, QSizePolicy.Minimum))
+        form_wrapper.addWidget(form_container)
+        form_wrapper.addItem(QSpacerItem(40, 20, QSizePolicy.Expanding, QSizePolicy.Minimum))
+        
+        layout.addLayout(form_wrapper)
+        layout.addItem(QSpacerItem(20, 20, QSizePolicy.Minimum, QSizePolicy.Fixed))
+        
+        # Create Account button
+        create_btn = QPushButton("Create Account")
+        create_btn.setObjectName("primaryButton")
+        create_btn.setMaximumWidth(200)
+        create_btn.clicked.connect(self.signUp)
+        
+        btn_wrapper = QHBoxLayout()
+        btn_wrapper.addItem(QSpacerItem(40, 20, QSizePolicy.Expanding, QSizePolicy.Minimum))
+        btn_wrapper.addWidget(create_btn)
+        btn_wrapper.addItem(QSpacerItem(40, 20, QSizePolicy.Expanding, QSizePolicy.Minimum))
+        
+        layout.addLayout(btn_wrapper)
+        layout.addItem(QSpacerItem(20, 20, QSizePolicy.Minimum, QSizePolicy.Expanding))
+        
+        widget.setLayout(layout)
+        return widget
+    
+    def createBackButtonWidget(self):
+        """Create a simple back button widget for the left side"""
+        widget = QFrame()
+        widget.setObjectName("backButtonFrame")
+        layout = QVBoxLayout()
+        
+        layout.addItem(QSpacerItem(20, 40, QSizePolicy.Minimum, QSizePolicy.Expanding))
+        
+        # Back button
+        back_btn = QPushButton("← Back to\nSign In")
+        back_btn.setObjectName("backToSignInButton")
+        back_btn.clicked.connect(self.showSignIn)
+        
+        btn_wrapper = QHBoxLayout()
+        btn_wrapper.addItem(QSpacerItem(20, 20, QSizePolicy.Expanding, QSizePolicy.Minimum))
+        btn_wrapper.addWidget(back_btn)
+        btn_wrapper.addItem(QSpacerItem(20, 20, QSizePolicy.Expanding, QSizePolicy.Minimum))
+        
+        layout.addLayout(btn_wrapper)
+        layout.addItem(QSpacerItem(20, 40, QSizePolicy.Minimum, QSizePolicy.Expanding))
+        
+        widget.setLayout(layout)
+        return widget
+    
+    def showSignUp(self):
+        # Hide sign in widget completely
+        self.signin_widget.hide()
+        self.main_layout.removeWidget(self.signin_widget)
+        
+        # Hide sign up button widget
+        self.signup_button_widget.hide() 
+        self.main_layout.removeWidget(self.signup_button_widget)
+        
+        # Show back button widget (25%) and sign up form (75%)
+        self.main_layout.addWidget(self.back_button_widget, 25)
+        self.back_button_widget.show()
+        
+        self.main_layout.addWidget(self.signup_widget, 75)
+        self.signup_widget.show()
+        
+    def showSignIn(self):
+        # Hide and remove sign up widgets
+        self.signup_widget.hide()
+        self.main_layout.removeWidget(self.signup_widget)
+        
+        self.back_button_widget.hide()
+        self.main_layout.removeWidget(self.back_button_widget)
+        
+        # Show sign in widget (75%) and sign up button (25%)
+        self.main_layout.addWidget(self.signin_widget, 75)
+        self.signin_widget.show()
+        
+        self.main_layout.addWidget(self.signup_button_widget, 25)
+        self.signup_button_widget.show()
+        
+        # Clear sign up form
+        self.clearSignUpForm()
+    
+    def clearSignUpForm(self):
+        self.signup_fullname.clear()
+        self.signup_username.clear()
+        self.signup_password.clear()
+        self.signup_confirm_password.clear()
+        self.signup_role.setCurrentIndex(0)
+        self.signup_email.clear()
+        self.signup_phone.clear()
+    
+    def handle_database_lock(self):
+        """Handle database lock by clearing connections and removing lock files"""
+        try:
+            # Force garbage collection to close any lingering connections
+            import gc
+            gc.collect()
+            
+            # Small delay to allow cleanup
+            time.sleep(0.1)
+            
+            # Remove any SQLite lock files if they exist
+            lock_files = ["testing_system.db-wal", "testing_system.db-shm"]
+            for lock_file in lock_files:
+                if os.path.exists(lock_file):
+                    try:
+                        os.remove(lock_file)
+                        print(f"   Removed lock file: {lock_file}")
+                    except OSError as e:
+                        print(f"   Could not remove {lock_file}: {e}")
+            
+            print("   Database lock handling completed")
+        except Exception as e:
+            print(f"   Error handling database lock: {e}")
+    
+    def open_admin_dashboard(self, user_info):
+        """Open the admin dashboard in fullscreen"""
+        try:
+            if Dashboard is None:
+                QMessageBox.critical(self, "Error", 
+                                   "Dashboard module not found!\nPlease ensure 'newdashboard.py' is in the same directory.")
+                return
+            
+            role_name = user_info['role_name']
+            print(f"   Opening Dashboard for {role_name.lower()} user...")
+            
+            # Create and show dashboard in fullscreen
+            # Pass the actual role to the Dashboard
+            self.dashboard_window = Dashboard(user_role=role_name)
+            self.dashboard_window.showMaximized()  # Open in fullscreen
+            
+            print(f"✓ Dashboard opened in fullscreen mode")
+            print(f"   User: {user_info['fullname'] or user_info['username']}")
+            print(f"   Role: {user_info['role_name']}")
+            
+            # Close the login window
+            self.close()
+            
+        except Exception as e:
+            print(f"✗ Error opening dashboard: {str(e)}")
+            QMessageBox.critical(self, "Dashboard Error", 
+                               f"Error opening dashboard: {str(e)}")
+    
+    def open_owner_window(self, user_info):
+        """Open the owner-specific window"""
+        try:
+            print(f"   Opening Owner Window...")
+            
+            # Create and show owner window
+            self.owner_window = OwnerWindow(user_info)
+            self.owner_window.show()
+            
+            print(f"✓ Owner Window opened successfully")
+            
+            # Close the login window
+            self.close()
+            
+        except Exception as e:
+            print(f"✗ Error opening owner window: {str(e)}")
+            QMessageBox.critical(self, "Owner Window Error", 
+                               f"Error opening owner window: {str(e)}")
+    
+    def open_tester_window(self, user_info):
+        """Open the tester-specific window"""
+        try:
+            print(f"   Opening Tester Portal...")
+            
+            # Create and show tester window
+            self.tester_window = TesterWindow(user_info)
+            self.tester_window.show()
+            
+            print(f"✓ Tester Portal opened successfully")
+            
+            # Close the login window
+            self.close()
+            
+        except Exception as e:
+            print(f"✗ Error opening tester window: {str(e)}")
+            QMessageBox.critical(self, "Tester Window Error", 
+                               f"Error opening tester window: {str(e)}")
+    
+
+    
+    def validateSignIn(self):
+        username = self.signin_username.text().strip()
+        password = self.signin_password.text().strip()
+        
+        if not username:
+            QMessageBox.warning(self, "Error", "Username is required")
+            return False
+            
+        if not password:
+            QMessageBox.warning(self, "Error", "Password is required")
+            return False
+            
+        # Validate password is numeric
+        try:
+            int(password)
+        except ValueError:
+            QMessageBox.warning(self, "Error", "Password must be numeric")
+            return False
+            
+        return True
+    
+    def validateSignUp(self):
+        fullname = self.signup_fullname.text().strip()
+        username = self.signup_username.text().strip()
+        password = self.signup_password.text().strip()
+        confirm_password = self.signup_confirm_password.text().strip()
+        role = self.signup_role.currentText()
+        email = self.signup_email.text().strip()
+        phone = self.signup_phone.text().strip()
+        
+        # Check required fields
+        if not all([fullname, username, password, confirm_password, email, phone]):
+            QMessageBox.warning(self, "Error", "All fields are required")
+            return False
+            
+        if role == "Select Role":
+            QMessageBox.warning(self, "Error", "Please select a role")
+            return False
+        
+        # Validate password
+        try:
+            pwd_int = int(password)
+            if len(password) < 4:
+                QMessageBox.warning(self, "Error", "Password must be at least 4 digits")
+                return False
+        except ValueError:
+            QMessageBox.warning(self, "Error", "Password must be numeric")
+            return False
+        
+        # Check password confirmation
+        if password != confirm_password:
+            QMessageBox.warning(self, "Error", "Passwords do not match")
+            return False
+        
+        # Basic email validation
+        if "@" not in email or "." not in email:
+            QMessageBox.warning(self, "Error", "Please enter a valid email address")
+            return False
+        
+        return True
+    
+    def signIn(self):
+        if not self.validateSignIn():
+            return
+            
+        username = self.signin_username.text().strip()
+        password = int(self.signin_password.text().strip())
+        
+        conn = None
+        try:
+            # Connect with timeout and enable WAL mode for better concurrency
+            conn = sqlite3.connect("testing_system.db", timeout=30.0)
+            conn.execute("PRAGMA journal_mode=WAL")
+            cursor = conn.cursor()
+            
+            # Check user credentials
+            cursor.execute("""
+                SELECT u.user_id, u.username, r.role_name, u.fullname, u.email
+                FROM users u
+                LEFT JOIN roles r ON u.role = r.role_id
+                WHERE u.username = ? AND u.password = ?
+            """, (username, password))
+            
+            user = cursor.fetchone()
+            
+            if user:
+                user_info = {
+                    'user_id': user[0],
+                    'username': user[1],
+                    'role_name': user[2],
+                    'fullname': user[3],
+                    'email': user[4]
+                }
+                
+                print(f"✓ User '{username}' successfully signed in from database")
+                print(f"  - User ID: {user_info['user_id']}")
+                print(f"  - Full Name: {user_info['fullname'] or user_info['username']}")
+                print(f"  - Role: {user_info['role_name']}")
+                print(f"  - Email: {user_info['email']}")
+                
+                # Role-based redirection
+                role = user_info['role_name'].lower()
+                
+                if role == 'admin' or role == 'superadmin':
+                    if role == 'admin':
+                        print(f"🚀 Redirecting admin user to Dashboard...")
+                    else:
+                        print(f"👑 Redirecting super admin to Dashboard...")
+                    self.open_admin_dashboard(user_info)
+                elif role == 'owner':
+                    print(f"🏢 Redirecting owner user to Owner Window...")
+                    self.open_owner_window(user_info)
+                elif role == 'tester':
+                    print(f"🧪 Redirecting tester user to Tester Portal...")
+                    self.open_tester_window(user_info)
+                else:
+                    # For any other unknown roles
+                    print(f"🔧 Unknown role '{role}' - showing general success message")
+                    QMessageBox.information(self, "Success", 
+                                          f"Welcome back, {user_info['fullname'] or user_info['username']}!\nRole: {user_info['role_name']}\n\nSpecific interface for your role will be implemented soon.")
+                    self.close()
+                
+            else:
+                print(f"✗ Sign in failed for username '{username}' - Invalid credentials")
+                QMessageBox.warning(self, "Error", "Invalid username or password")
+                
+        except sqlite3.OperationalError as e:
+            if "database is locked" in str(e):
+                print(f"✗ Database is locked, attempting to resolve...")
+                self.handle_database_lock()
+                QMessageBox.warning(self, "Database Busy", 
+                                  "Database is temporarily busy. Please try again in a moment.")
+            else:
+                print(f"✗ Database operational error during sign in: {str(e)}")
+                QMessageBox.critical(self, "Database Error", f"Database error: {str(e)}")
+        except sqlite3.Error as e:
+            print(f"✗ Database error during sign in: {str(e)}")
+            QMessageBox.critical(self, "Database Error", f"An error occurred: {str(e)}")
+        except Exception as e:
+            print(f"✗ Unexpected error during sign in: {str(e)}")
+            QMessageBox.critical(self, "Error", f"An unexpected error occurred: {str(e)}")
+        finally:
+            if conn:
+                conn.close()
+    
+    def signUp(self):
+        if not self.validateSignUp():
+            return
+            
+        fullname = self.signup_fullname.text().strip()
+        username = self.signup_username.text().strip()
+        password = int(self.signup_password.text().strip())
+        role = self.signup_role.currentText().lower()
+        email = self.signup_email.text().strip()
+        phone = self.signup_phone.text().strip()
+        
+        # Map role to role_id
+        role_mapping = {
+            "admin": 2, 
+            "owner": 3, 
+            "tester": 4, 
+            "super admin": 1
+        }
+        role_id = role_mapping.get(role, 3)  # Default to owner if not found
+        
+        conn = None
+        try:
+            print(f"⚡ Attempting to create user account for '{username}'...")
+            
+            # Connect with timeout and enable WAL mode for better concurrency
+            conn = sqlite3.connect("testing_system.db", timeout=30.0)
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA foreign_keys = ON")
+            cursor = conn.cursor()
+            
+            # Check if username already exists
+            print(f"   Checking if username '{username}' already exists...")
+            cursor.execute("SELECT username FROM users WHERE username = ?", (username,))
+            if cursor.fetchone():
+                print(f"✗ Username '{username}' already exists in database")
+                QMessageBox.warning(self, "Error", "Username already exists. Please choose a different one.")
+                return
+            
+            print(f"   Username is available, proceeding with registration...")
+            
+            # Insert new user
+            cursor.execute("""
+                INSERT INTO users (username, password, role, fullname, email, phone_no)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (username, password, role_id, fullname, email, phone))
+            
+            # Get the new user's ID
+            new_user_id = cursor.lastrowid
+            
+            conn.commit()
+            
+            # Success logging
+            print(f"✓ USER SUCCESSFULLY SAVED TO DATABASE!")
+            print(f"  - User ID: {new_user_id}")
+            print(f"  - Username: {username}")
+            print(f"  - Full Name: {fullname}")
+            print(f"  - Role: {role} (role_id: {role_id})")
+            print(f"  - Email: {email}")
+            print(f"  - Phone: {phone}")
+            print(f"  - Database: testing_system.db")
+            print(f"  - Timestamp: {time.strftime('%Y-%m-%d %H:%M:%S')}")
+            
+            QMessageBox.information(self, "Success", 
+                                  f"Account created successfully!\nWelcome, {fullname}!")
+            
+            # Switch back to sign in view
+            self.showSignIn()
+            
+        except sqlite3.OperationalError as e:
+            if "database is locked" in str(e):
+                print(f"✗ Database is locked during user registration")
+                self.handle_database_lock()
+                QMessageBox.warning(self, "Database Busy", 
+                                  "Database is temporarily busy. Please try again in a moment.")
+            else:
+                print(f"✗ Database operational error during registration: {str(e)}")
+                QMessageBox.critical(self, "Database Error", f"Database error: {str(e)}")
+        except sqlite3.IntegrityError as e:
+            print(f"✗ Database integrity error during registration: {str(e)}")
+            QMessageBox.critical(self, "Database Error", 
+                               "Data integrity error. Please check your input and try again.")
+        except sqlite3.Error as e:
+            print(f"✗ Database error during registration: {str(e)}")
+            QMessageBox.critical(self, "Database Error", f"An error occurred: {str(e)}")
+        except Exception as e:
+            print(f"✗ Unexpected error during registration: {str(e)}")
+            QMessageBox.critical(self, "Error", f"An unexpected error occurred: {str(e)}")
+        finally:
+            if conn:
+                conn.close()
+                print(f"   Database connection closed")
+    
+    def applyStyles(self):
+        self.setStyleSheet(f"""
+            QMainWindow {{
+                background-color: {self.green_colors['background']};
+            }}
+            
+            QFrame#signinFrame {{
+                background-color: {self.green_colors['white']};
+                border-right: 3px solid {self.green_colors['secondary']};
+            }}
+            
+            QFrame#signupButtonFrame {{
+                background-color: {self.orange_colors['primary']};
+            }}
+            
+            QFrame#backButtonFrame {{
+                background-color: {self.orange_colors['primary']};
+                border-right: 3px solid {self.orange_colors['secondary']};
+            }}
+            
+            QFrame#signupFrame {{
+                background-color: {self.orange_colors['white']};
+                border-left: 3px solid {self.orange_colors['secondary']};
+            }}
+            
+            QLabel#title {{
+                font-size: 32px;
+                font-weight: bold;
+                color: {self.green_colors['dark']};
+                margin: 20px;
+            }}
+            
+            QLabel#subtitle {{
+                font-size: 16px;
+                color: {self.green_colors['text']};
+                margin-bottom: 10px;
+            }}
+            
+            QLabel#welcomeText {{
+                font-size: 24px;
+                font-weight: bold;
+                color: {self.orange_colors['white']};
+                margin: 10px;
+            }}
+            
+            QLabel#descText {{
+                font-size: 14px;
+                color: {self.orange_colors['white']};
+                margin: 10px;
+                line-height: 1.4;
+            }}
+            
+            QWidget#formContainer {{
+                background-color: transparent;
+            }}
+            
+            QLineEdit#inputField {{
+                padding: 12px 15px;
+                border: 2px solid {self.green_colors['secondary']};
+                border-radius: 8px;
+                font-size: 14px;
+                background-color: {self.green_colors['white']};
+                color: {self.green_colors['text']};
+                min-height: 20px;
+            }}
+            
+            QLineEdit#inputField:focus {{
+                border-color: {self.green_colors['accent']};
+                outline: none;
+            }}
+            
+            QComboBox#comboBox {{
+                padding: 12px 15px;
+                border: 2px solid {self.green_colors['secondary']};
+                border-radius: 8px;
+                font-size: 14px;
+                background-color: {self.green_colors['white']};
+                color: {self.green_colors['text']};
+                min-height: 20px;
+            }}
+            
+            QComboBox#comboBox:focus {{
+                border-color: {self.green_colors['accent']};
+            }}
+            
+            QComboBox#comboBox::drop-down {{
+                border: none;
+                width: 20px;
+            }}
+            
+            QPushButton#primaryButton {{
+                background-color: {self.green_colors['dark']};
+                color: {self.green_colors['white']};
+                border: none;
+                border-radius: 8px;
+                padding: 15px 30px;
+                font-size: 16px;
+                font-weight: bold;
+                min-width: 120px;
+            }}
+            
+            QPushButton#primaryButton:hover {{
+                background-color: {self.green_colors['accent']};
+            }}
+            
+            QPushButton#primaryButton:pressed {{
+                background-color: {self.green_colors['dark']};
+            }}
+            
+            QPushButton#secondaryButton {{
+                background-color: {self.orange_colors['white']};
+                color: {self.orange_colors['dark']};
+                border: 2px solid {self.orange_colors['white']};
+                border-radius: 8px;
+                padding: 12px 25px;
+                font-size: 14px;
+                font-weight: bold;
+                min-width: 100px;
+            }}
+            
+            QPushButton#secondaryButton:hover {{
+                background-color: {self.orange_colors['secondary']};
+                border-color: {self.orange_colors['secondary']};
+            }}
+            
+            QPushButton#backToSignInButton {{
+                background-color: {self.orange_colors['white']};
+                color: {self.orange_colors['dark']};
+                border: 2px solid {self.orange_colors['white']};
+                border-radius: 8px;
+                padding: 15px 25px;
+                font-size: 16px;
+                font-weight: bold;
+                min-width: 120px;
+                max-width: 150px;
+            }}
+            
+            QPushButton#backToSignInButton:hover {{
+                background-color: {self.orange_colors['secondary']};
+                border-color: {self.orange_colors['secondary']};
+            }}
+            
+            QPushButton#backButton {{
+                background-color: transparent;
+                color: {self.green_colors['accent']};
+                border: none;
+                font-size: 14px;
+                text-align: left;
+                padding: 8px;
+            }}
+            
+            QPushButton#backButton:hover {{
+                color: {self.green_colors['dark']};
+                text-decoration: underline;
+            }}
+            
+            QFormLayout QLabel {{
+                font-size: 14px;
+                font-weight: bold;
+                color: {self.green_colors['text']};
+                margin-bottom: 5px;
+            }}
+            
+            /* Orange theme styles for signup form */
+            QFrame#signupFrame QLabel#title {{
+                color: {self.orange_colors['dark']};
+            }}
+            
+            QFrame#signupFrame QLabel#subtitle {{
+                color: {self.orange_colors['text']};
+            }}
+            
+            QFrame#signupFrame QLineEdit#inputField {{
+                border: 2px solid {self.orange_colors['secondary']};
+                background-color: {self.orange_colors['white']};
+                color: {self.orange_colors['text']};
+            }}
+            
+            QFrame#signupFrame QLineEdit#inputField:focus {{
+                border-color: {self.orange_colors['accent']};
+            }}
+            
+            QFrame#signupFrame QComboBox#comboBox {{
+                border: 2px solid {self.orange_colors['secondary']};
+                background-color: {self.orange_colors['white']};
+                color: {self.orange_colors['text']};
+            }}
+            
+            QFrame#signupFrame QComboBox#comboBox:focus {{
+                border-color: {self.orange_colors['accent']};
+            }}
+            
+            QFrame#signupFrame QPushButton#primaryButton {{
+                background-color: {self.orange_colors['dark']};
+                color: {self.orange_colors['white']};
+            }}
+            
+            QFrame#signupFrame QPushButton#primaryButton:hover {{
+                background-color: {self.orange_colors['accent']};
+            }}
+            
+            QFrame#signupFrame QPushButton#primaryButton:pressed {{
+                background-color: {self.orange_colors['dark']};
+            }}
+            
+            QFrame#signupFrame QFormLayout QLabel {{
+                color: {self.orange_colors['text']};
+            }}
+        """)
+
+def main():
+    app = QApplication(sys.argv)
+    
+    print("=" * 60)
+    print("🏥 MEDICAL TESTING SYSTEM - USER AUTHENTICATION")
+    print("=" * 60)
+    
+    # Check if database exists and is accessible
+    try:
+        print("🔍 Checking database connection...")
+        conn = sqlite3.connect("testing_system.db", timeout=10.0)
+        cursor = conn.cursor()
+        
+        # Test basic connectivity
+        cursor.execute("SELECT COUNT(*) FROM users LIMIT 1")
+        user_count = cursor.fetchone()[0]
+        
+        # Test if roles table exists and has data
+        cursor.execute("SELECT COUNT(*) FROM roles")
+        role_count = cursor.fetchone()[0]
+        
+        conn.close()
+        
+        print(f"✓ Database connection successful")
+        print(f"✓ Found {user_count} users in database")
+        print(f"✓ Found {role_count} roles configured")
+        print("✓ Application ready to start")
+        print("-" * 60)
+        
+    except sqlite3.OperationalError as e:
+        if "no such table" in str(e):
+            print("✗ Database tables not found")
+            QMessageBox.critical(None, "Database Error", 
+                               "Database tables not found.\nPlease run 'python databaseSetup1.py' first to create the database structure.")
+        else:
+            print(f"✗ Database error: {str(e)}")
+            QMessageBox.critical(None, "Database Error", 
+                               f"Database error: {str(e)}\nPlease check if 'python databaseSetup1.py' was run successfully.")
+        sys.exit()
+    except sqlite3.Error as e:
+        print(f"✗ Database connection failed: {str(e)}")
+        QMessageBox.critical(None, "Database Error", 
+                           f"Database error: {str(e)}\nPlease run 'python databaseSetup1.py' first.")
+        sys.exit()
+    except Exception as e:
+        print(f"✗ Unexpected error: {str(e)}")
+        QMessageBox.critical(None, "Error", f"Unexpected error: {str(e)}")
+        sys.exit()
+    
+    window = SignInSignUpWindow()
+    window.show()
+    
+    print("🚀 Application window displayed")
+    print("📋 Ready for user authentication")
+    print("=" * 60)
+    
+    sys.exit(app.exec_())
+
+if __name__ == "__main__":
+    main() 
