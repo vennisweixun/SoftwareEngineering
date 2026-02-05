@@ -1,0 +1,1123 @@
+import tkinter as tk
+from tkinter import ttk, filedialog, messagebox
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+import matplotlib.pyplot as plt
+import sqlite3
+import os
+import datetime
+from datetime import datetime, timedelta, date
+from PIL import Image, ImageTk
+from tkcalendar import DateEntry
+from datetime import datetime
+import pandas as pd
+from fpdf import FPDF
+import platform
+from openpyxl.utils import get_column_letter
+
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))  # Path of the current script
+db_path = os.path.join(BASE_DIR, "tester1.db")
+
+print(f"Database full path: {db_path}")  # For debugging
+
+
+def create_database_tables():
+    """Create all database tables with proper schema"""
+    try:
+        # Use the consistent db_path variable
+        with sqlite3.connect(db_path) as conn:
+            cursor = conn.cursor()
+
+            # Create all tables with proper formatting
+            cursor.executescript('''
+                CREATE TABLE IF NOT EXISTS Users (
+                    user_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    username TEXT NOT NULL UNIQUE,
+                    password TEXT NOT NULL,
+                    role TEXT NOT NULL,
+                    email TEXT NOT NULL UNIQUE,
+                    phone_no TEXT,
+                    branch TEXT,
+                    batch TEXT
+                );
+
+                CREATE TABLE IF NOT EXISTS Products (
+                    product_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    product_name TEXT NOT NULL,
+                    manufacture_date DATE NOT NULL,
+                    expired_date DATE NOT NULL,
+                    arrival_date DATE NOT NULL,
+                    location TEXT NOT NULL,
+                    batch TEXT NOT NULL,
+                    barcode TEXT UNIQUE,
+                    excel_name TEXT,
+                    sku TEXT,
+                    branch TEXT,
+                    product_image BLOB,
+                    FOREIGN KEY (user_id) REFERENCES Users(user_id)
+                );
+
+                CREATE TABLE IF NOT EXISTS Testing (
+                    test_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    product_id INTEGER NOT NULL,
+                    test_start DATETIME NOT NULL,
+                    test_end DATETIME,
+                    test_status TEXT NOT NULL,
+                    test_result TEXT,
+                    test_image TEXT,
+                    FOREIGN KEY (user_id) REFERENCES Users(user_id),
+                    FOREIGN KEY (product_id) REFERENCES Products(product_id)
+                );
+
+
+                CREATE TABLE IF NOT EXISTS Update_details (
+                    update_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    product_id INTEGER NOT NULL,
+                    product_name TEXT,
+                    manufacture_date DATE,
+                    expired_date DATE,
+                    arrival_date DATE,
+                    location TEXT,
+                    batch TEXT,
+                    update_date DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (user_id) REFERENCES Users(user_id),
+                    FOREIGN KEY (product_id) REFERENCES Products(product_id)
+                );
+
+                CREATE TABLE IF NOT EXISTS messages (
+                    message_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    sender INTEGER NOT NULL,
+                    receiver INTEGER NOT NULL,
+                    message TEXT NOT NULL,
+                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (sender) REFERENCES Users(user_id),
+                    FOREIGN KEY (receiver) REFERENCES Users(user_id)
+                );
+                
+                CREATE TABLE IF NOT EXISTS Notifications (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER,
+                    message TEXT,
+                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    read INTEGER DEFAULT 0
+                );
+
+
+                CREATE TABLE IF NOT EXISTS product_tester_assignments (
+                    assignment_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    product_id INTEGER NOT NULL,
+                    tester_id INTEGER NOT NULL,
+                    FOREIGN KEY (product_id) REFERENCES Products(product_id),
+                    FOREIGN KEY (tester_id) REFERENCES Users(user_id),
+                    UNIQUE(product_id, tester_id)
+                );
+            ''')
+
+            print("Database tables created successfully.")
+
+    except sqlite3.Error as e:
+        print(f"Database error occurred: {e}")
+    except Exception as e:
+        print(f"An unexpected error occurred: {e}")
+
+
+class TesterHomePage(tk.Tk):
+    def __init__(self):
+        super().__init__()
+        self.user_id = self.get_current_user_id()
+        self.title("Tester Dashboard")
+        self.geometry("1400x900")
+        self.create_sidebar()
+        self.create_main_area()
+
+    def get_current_user_id(self):
+        # For testing purposes, return 1 (the tester user)
+        # In real application, this would come from login session
+        return 1
+
+    def create_sidebar(self):
+        sidebar = tk.Frame(self, bg="#FCA6FF", width=250)
+        sidebar.pack(side="left", fill="y")
+
+        title = tk.Label(sidebar, text="Tester Panel", fg="#EEEEEE", bg="#FCA6FF", font=("Helvetica", 16, "bold"))
+        title.pack(pady=20)
+
+
+        options = [
+            "Product Assignments",
+            "Test Result Update",
+            "Test Schedule",
+            "Progress Tracker",
+            "Test History",
+            "Test Analysis",
+            "Notifications",
+            "Feedback",
+            "Send Email",
+        ]
+
+        self.buttons = {}
+        for opt in options:
+            btn = tk.Button(sidebar, text=opt, font=("Helvetica", 12), bg="#34495e", fg="white", relief="flat",
+                            command=lambda o=opt: self.switch_frame(o))
+            btn.pack(fill='x', padx=20, pady=5)
+            self.buttons[opt] = btn
+
+    def create_main_area(self):
+        self.main_frame = tk.Frame(self, bg="white")
+        self.main_frame.pack(side="right", expand=True, fill="both")
+        self.switch_frame("Product Assignments")
+
+
+    def clear_main_frame(self):
+        for widget in self.main_frame.winfo_children():
+            widget.destroy()
+
+
+    def switch_frame(self, section):
+        self.clear_main_frame()
+
+        if section == "Product Assignments":
+            current_user_id = self.get_current_user_id()
+
+            ttk.Label(self.main_frame, text="Assigned Products", font=("Arial", 16, "bold")).pack(pady=10)
+
+            # Create frame for the treeview and scrollbar
+            tree_frame = tk.Frame(self.main_frame)
+            tree_frame.pack(fill='both', expand=True, padx=20, pady=10)
+
+            tree = ttk.Treeview(tree_frame,
+                                columns=("Product ID", "Product Name", "Status", "Location", "Batch"),
+                                show='headings')
+
+            # Configure column headings
+            tree.heading("Product ID", text="Product ID")
+            tree.heading("Product Name", text="Product Name")
+            tree.heading("Status", text="Test Status")
+            tree.heading("Location", text="Location")
+            tree.heading("Batch", text="Batch")
+
+            # Configure column widths
+            tree.column("Product ID", width=80)
+            tree.column("Product Name", width=200)
+            tree.column("Status", width=120)
+            tree.column("Location", width=120)
+            tree.column("Batch", width=150)
+
+            conn = None  # Define conn ahead of time to avoid UnboundLocalError
+
+            try:
+                conn = sqlite3.connect('medical_system.db')
+                cursor = conn.cursor()
+
+                # Query to get assigned products with their current test status
+                cursor.execute("""
+                    SELECT 
+                        P.product_id,
+                        P.product_name, 
+                        T.test_status,
+                        P.location,
+                        P.batch
+                    FROM Products P
+                    INNER JOIN product_tester_assignments A ON P.product_id = A.product_id
+                    LEFT JOIN Testing T ON T.product_id = P.product_id AND T.user_id = A.tester_id
+                    WHERE A.tester_id = ?
+                    ORDER BY P.product_name
+                """, (current_user_id,))
+
+                rows = cursor.fetchall()
+
+                if not rows:
+                    no_data_frame = tk.Frame(self.main_frame)
+                    no_data_frame.pack(expand=True)
+                    ttk.Label(no_data_frame, text="No products assigned", font=("Arial", 14)).pack(pady=20)
+                    return
+
+                for row in rows:
+                    formatted_row = [str(item) for item in row]
+                    tree.insert('', 'end', values=formatted_row)
+
+                tree.pack(fill='both', expand=True)
+
+                scrollbar = ttk.Scrollbar(tree_frame, orient="vertical", command=tree.yview)
+                tree.configure(yscrollcommand=scrollbar.set)
+
+                tree.pack(side="left", fill='both', expand=True)
+                scrollbar.pack(side="right", fill='y')
+
+                button_frame = tk.Frame(self.main_frame)
+                button_frame.pack(pady=10)
+
+                ttk.Button(button_frame, text="Start Test",
+                           command=lambda: self.start_test(tree)).pack(side="left", padx=5)
+                ttk.Button(button_frame, text="Pause Test",
+                           command=lambda: self.pause_test(tree)).pack(side="left", padx=5)
+                ttk.Button(button_frame, text="End Test",
+                           command=lambda: self.end_test(tree)).pack(side="left", padx=5)
+                ttk.Button(button_frame, text="View Details",
+                           command=lambda: self.view_product_details(tree)).pack(side="left", padx=5)
+
+            except sqlite3.Error as e:
+                error_frame = tk.Frame(self.main_frame)
+                error_frame.pack(expand=True)
+                ttk.Label(error_frame, text=f"Error fetching product assignments: {e}",
+                          font=("Arial", 12), foreground="red").pack(pady=20)
+
+            finally:
+                if conn:
+                    conn.close()
+
+        elif section == "Test Result Update":
+            ttk.Label(self.main_frame, text="Update Test Result Status", font=("Arial", 16)).pack(pady=10)
+
+            ttk.Label(self.main_frame, text="Select Product:").pack(anchor='w', padx=20)
+            product_combo = ttk.Combobox(self.main_frame, width=50)
+            product_combo.pack(padx=20, pady=5)
+
+            try:
+                with sqlite3.connect('medical_system.db') as conn:
+                    cursor = conn.cursor()
+
+                    cursor.execute("""
+                            SELECT P.product_id, P.product_name 
+                            FROM Products P
+                            INNER JOIN product_tester_assignments A ON P.product_id = A.product_id
+                            WHERE A.tester_id = ?
+                        """, (self.get_current_user_id(),))
+                    products = cursor.fetchall()
+
+                    if products:
+                        product_combo['values'] = [f"{p[0]} - {p[1]}" for p in products]
+                    else:
+                        product_combo['values'] = ["No products assigned"]
+
+            except sqlite3.Error as e:
+                print(f"Error loading products: {e}")
+                messagebox.showerror("Database Error", f"Failed to load products: {e}")
+
+            ttk.Label(self.main_frame, text="Test Status:").pack(anchor='w', padx=20, pady=(10, 0))
+            status_combo = ttk.Combobox(self.main_frame,
+                                        values=["Not Started", "In Progress", "Completed", "Failed", "Retest Required"])
+            status_combo.pack(padx=20, pady=5)
+
+            ttk.Label(self.main_frame, text="Test Result:").pack(anchor='w', padx=20, pady=(10, 0))
+            result_text = tk.Text(self.main_frame, height=4, width=50)
+            result_text.pack(padx=20, pady=6)
+
+            ttk.Label(self.main_frame, text="Upload Image:").pack(anchor='w', padx=20, pady=(10, 0))
+
+            self.attached_file_path = None
+
+            # Frame to hold image
+            self.image_display_frame = ttk.Frame(self.main_frame, width=300, height=200, relief=tk.SUNKEN)
+            self.image_display_frame.pack(padx=20, pady=5)
+
+            # Label to hold image inside the frame
+            self.image_label = tk.Label(self.image_display_frame)
+            self.image_label.pack()
+
+            # Label to display the image path text (optional)
+            self.image_path_label = ttk.Label(self.main_frame, text="")
+            self.image_path_label.pack()
+
+            ttk.Button(self.main_frame, text="Attach File", command=self.attach_file).pack(pady=5)
+            ttk.Button(self.main_frame, text="Update Status",
+                       command=lambda: self.update_test_status(product_combo, status_combo, result_text)).pack(pady=10)
+
+        elif section == "Test Schedule":
+            ttk.Label(self.main_frame, text="Test Schedule", font=("Arial", 16)).pack(pady=10)
+
+            # Frame for calendar controls
+            cal_frame = ttk.Frame(self.main_frame)
+            cal_frame.pack(pady=10)
+
+            ttk.Label(cal_frame, text="From:").grid(row=0, column=0, padx=5)
+            self.start_date_entry = DateEntry(cal_frame, width=12, background='darkblue',
+                                              foreground='white', borderwidth=2, date_pattern='yyyy-mm-dd')
+            self.start_date_entry.grid(row=0, column=1, padx=5)
+
+            ttk.Label(cal_frame, text="To:").grid(row=0, column=2, padx=5)
+            self.end_date_entry = DateEntry(cal_frame, width=12, background='darkblue',
+                                            foreground='white', borderwidth=2, date_pattern='yyyy-mm-dd')
+            self.end_date_entry.grid(row=0, column=3, padx=5)
+
+            # Button to refresh schedule based on selected date range
+            refresh_btn = ttk.Button(cal_frame, text="Show Schedule", command=self.load_test_schedule)
+            refresh_btn.grid(row=0, column=4, padx=10)
+
+            # Treeview for test schedules
+            self.tree = ttk.Treeview(self.main_frame, columns=("Product", "Status", "Test Start", "Test End"),
+                                     show='headings')
+            for col in self.tree["columns"]:
+                self.tree.heading(col, text=col)
+            self.tree.pack(fill='both', expand=True, padx=20, pady=10)
+
+            # Tag for overdue highlight
+            self.tree.tag_configure("overdue", background="red")
+
+            # Load initial data for today
+            self.start_date_entry.set_date(datetime.today())
+            self.end_date_entry.set_date(datetime.today())
+            self.load_test_schedule()
+
+
+        elif section == "Progress Tracker":
+            ttk.Label(self.main_frame, text="Progress Tracker", font=("Arial", 16)).pack(pady=10)
+
+            fig, ax = plt.subplots(figsize=(8, 4))
+
+            # Get actual data from database
+            conn = sqlite3.connect("medical_system.db")
+            cursor = conn.cursor()
+
+            try:
+                cursor.execute("""
+                        SELECT test_status, COUNT(*) 
+                        FROM Testing 
+                        WHERE user_id = ? 
+                        GROUP BY test_status
+                    """, (self.get_current_user_id(),))
+                status_data = cursor.fetchall()
+
+                if status_data:
+                    statuses, counts = zip(*status_data)
+
+                    # Draw the bar chart
+                    color_map = {
+                        "Completed": "green",
+                        "In Progress": "blue",
+                        "Failed": "red",
+                        "Retest Required": "orange",
+                        "Not Started": "gray"
+                    }
+                    bar_colors = [color_map.get(status, 'black') for status in statuses]
+                    ax.bar(statuses, counts, color=bar_colors)
+
+                    # Calculate total and completed
+                    total = sum(counts)
+                    completed = sum(c for s, c in zip(statuses, counts) if s == "Completed")
+                    progress_percent = int((completed / total) * 100) if total > 0 else 0
+
+                    # Show percentage label
+                    ttk.Label(self.main_frame, text=f"Total Progress: {progress_percent}%", font=("Arial", 12)).pack(
+                        pady=5)
+
+                else:
+                    ax.bar(['No Data'], [0], color=['gray'])
+                    ttk.Label(self.main_frame, text="No test data available.", font=("Arial", 12)).pack(pady=5)
+
+            except sqlite3.Error as e:
+                ax.bar(['Error'], [0], color=['red'])
+                ttk.Label(self.main_frame, text=f"Database error: {e}", font=("Arial", 12), foreground='red').pack(
+                    pady=5)
+
+            ax.set_title("Test Result Summary")
+            ax.set_ylabel("Number of Tests")
+            canvas = FigureCanvasTkAgg(fig, master=self.main_frame)
+            canvas.draw()
+            canvas.get_tk_widget().pack(pady=10)
+
+        elif section == "Test History":
+            # Main frame setup
+            ttk.Label(self.main_frame, text="Test History", font=("Arial", 16)).pack(pady=10)
+
+            # Create treeview for test history
+            history_tree = ttk.Treeview(self.main_frame,
+                                        columns=("Product", "Status", "Start Date", "End Date", "Result"),
+                                        show='headings')
+
+            # Configure columns
+            for col in history_tree["columns"]:
+                history_tree.heading(col, text=col)
+                history_tree.column(col, width=150)
+
+            # Create control frame for export buttons
+            control_frame = ttk.Frame(self.main_frame)
+            control_frame.pack(fill='x', padx=20, pady=5)
+
+            # Export buttons
+            ttk.Button(control_frame, text="Export to Excel",
+                       command=lambda: self.export_history(history_tree, "excel")).pack(side='left', padx=5)
+            ttk.Button(control_frame, text="Export to PDF",
+                       command=lambda: self.export_history(history_tree, "pdf")).pack(side='left', padx=5)
+
+            try:
+                with sqlite3.connect('medical_system.db') as conn:
+                    cursor = conn.cursor()
+                    cursor.execute("""
+                        SELECT P.product_name, T.test_status, T.test_start, T.test_end, T.test_result
+                        FROM Testing T
+                        INNER JOIN Products P ON T.product_id = P.product_id
+                        WHERE T.user_id = ?
+                        ORDER BY T.test_start DESC
+                    """, (self.get_current_user_id(),))
+
+                    history_rows = cursor.fetchall()
+                    for row in history_rows:
+                        formatted_row = [str(item) if item is not None else "N/A" for item in row]
+                        history_tree.insert('', 'end', values=formatted_row)
+
+            except sqlite3.Error as e:
+                messagebox.showerror("Database Error", f"Failed to load test history: {e}")
+
+            history_tree.pack(fill='both', expand=True, padx=20, pady=10)
+
+
+        elif section == "Test Analysis":
+            # Title
+            ttk.Label(self.main_frame, text="Test Analysis", font=("Arial", 16)).pack(pady=10)
+
+            # Layout frames
+            analysis_frame = ttk.Frame(self.main_frame)
+            analysis_frame.pack(fill='both', expand=True, padx=20, pady=10)
+
+            summary_frame = ttk.LabelFrame(analysis_frame, text="Summary Statistics")
+            summary_frame.pack(fill='x', padx=10, pady=10)
+
+            chart_frame = ttk.LabelFrame(analysis_frame, text="Charts")
+            chart_frame.pack(fill='both', expand=True, padx=10, pady=10)
+
+            # Initialize counters
+            status_counts = {
+                "Not Started": 0,
+                "In Progress": 0,
+                "Completed": 0,
+                "Failed": 0,
+                "Retest Required": 0
+            }
+
+            total_duration = 0
+            duration_count = 0
+            product_count = {}
+
+            try:
+                with sqlite3.connect('medical_system.db') as conn:
+                    cursor = conn.cursor()
+                    cursor.execute("""
+                            SELECT T.test_status, T.test_start, T.test_end, P.product_name
+                            FROM Testing T
+                            INNER JOIN Products P ON T.product_id = P.product_id
+                            WHERE T.user_id = ?
+                        """, (self.get_current_user_id(),))
+
+                    rows = cursor.fetchall()
+                    for status, start, end, product in rows:
+                        if status in status_counts:
+                            status_counts[status] += 1
+
+                        if start and end:
+                            try:
+                                start_dt = datetime.strptime(start, '%Y-%m-%d')
+                                end_dt = datetime.strptime(end, '%Y-%m-%d')
+                                duration = (end_dt - start_dt).days
+                                if duration >= 0:
+                                    total_duration += duration
+                                    duration_count += 1
+                            except:
+                                pass
+
+                        if product:
+                            product_count[product] = product_count.get(product, 0) + 1
+
+            except sqlite3.Error as e:
+                messagebox.showerror("Database Error", f"Failed to fetch analysis data: {e}")
+                return
+
+            total_tests = sum(status_counts.values())
+            avg_duration = round(total_duration / duration_count, 2) if duration_count else 0
+
+            # Display summary
+            summary_text = f"""
+                🧪 Total Tests: {total_tests}
+                ✅ Completed: {status_counts['Completed']}
+                ⏳ In Progress: {status_counts['In Progress']}
+                💤 Not Started: {status_counts['Not Started']}
+                ❌ Failed: {status_counts['Failed']}
+                🔁 Retest Required: {status_counts['Retest Required']}
+                ⏱ Avg Duration (for completed): {avg_duration} days
+                """
+            ttk.Label(summary_frame, text=summary_text, justify='left').pack(anchor='w', padx=10, pady=5)
+
+            # ---- Charts ----
+            fig, axs = plt.subplots(1, 2, figsize=(10, 4))
+            fig.tight_layout(pad=4)
+
+            # Pie chart of test statuses
+            labels = list(status_counts.keys())
+            values = list(status_counts.values())
+            colors = ['#9E9E9E', '#2196F3', '#4CAF50', '#F44336', '#FF9800']
+
+            axs[0].pie(values, labels=labels, autopct='%1.1f%%', colors=colors)
+            axs[0].set_title('Test Status Breakdown')
+
+            # Bar chart of top 5 products
+            if product_count:
+                sorted_products = sorted(product_count.items(), key=lambda x: x[1], reverse=True)[:5]
+                prod_labels, prod_values = zip(*sorted_products)
+                axs[1].bar(prod_labels, prod_values, color='skyblue')
+                axs[1].set_title('Top 5 Tested Products')
+                axs[1].tick_params(axis='x', rotation=30)
+            else:
+                axs[1].text(0.5, 0.5, "No Product Data", ha='center')
+
+            # Show charts in Tkinter
+            canvas = FigureCanvasTkAgg(fig, master=chart_frame)
+            canvas.draw()
+            canvas.get_tk_widget().pack(fill='both', expand=True)
+
+        elif section == "Notifications":
+            ttk.Label(self.main_frame, text="Notifications", font=("Arial", 16)).pack(pady=10)
+
+            current_user_id = self.get_current_user_id()
+
+            # ✅ Insert expiry reminders BEFORE showing notifications
+            self.insert_expiry_reminders(current_user_id)
+
+            tree_frame = tk.Frame(self.main_frame)
+            tree_frame.pack(fill='both', expand=True, padx=20, pady=10)
+
+            tree = ttk.Treeview(tree_frame, columns=("Message", "Timestamp", "Read"), show='headings')
+
+            tree.heading("Message", text="Message")
+            tree.heading("Timestamp", text="Timestamp")
+            tree.heading("Read", text="Read")
+
+            tree.column("Message", width=300)
+            tree.column("Timestamp", width=150)
+            tree.column("Read", width=60)
+
+            scrollbar = ttk.Scrollbar(tree_frame, orient="vertical", command=tree.yview)
+            tree.configure(yscrollcommand=scrollbar.set)
+
+            tree.pack(side="left", fill='both', expand=True)
+            scrollbar.pack(side="right", fill='y')
+
+            try:
+                conn = sqlite3.connect("medical_system.db")
+                cursor = conn.cursor()
+
+                cursor.execute("""
+                    SELECT message, timestamp, read FROM Notifications
+                    WHERE user_id = ?
+                    ORDER BY timestamp DESC
+                """, (current_user_id,))
+                notifications = cursor.fetchall()
+
+                for note in notifications:
+                    read_status = "Yes" if note[2] else "No"
+                    tree.insert('', 'end', values=(note[0], note[1], read_status))
+
+                # Mark all unread notifications as read after showing
+                cursor.execute("""
+                    UPDATE Notifications SET read = 1
+                    WHERE user_id = ? AND read = 0
+                """, (current_user_id,))
+                conn.commit()
+
+            except sqlite3.Error as e:
+                ttk.Label(self.main_frame, text=f"Error loading notifications: {e}", foreground="red").pack(pady=10)
+            finally:
+                if conn:
+                    conn.close()
+
+    def _get_selected_product_id(self, tree):
+        """Helper to get the product ID of the selected item in the treeview."""
+        selected_item = tree.focus()
+        if selected_item:
+            return tree.item(selected_item, 'values')[0]  # Product ID is the first column
+        return None
+
+    def start_test(self, tree):
+        """
+        Starts a test for the selected product.
+        If the test is already in progress or completed, shows a message.
+        If paused or not started, updates the status to 'In Progress'.
+        """
+        product_id = self._get_selected_product_id(tree)
+        if not product_id:
+            self._show_message("Please select a product to start testing.", "Warning")
+            return
+
+        current_user_id = self.get_current_user_id()
+        conn = None
+        try:
+            conn = sqlite3.connect('medical_system.db')
+            cursor = conn.cursor()
+
+            cursor.execute("SELECT test_status FROM Testing WHERE product_id = ? AND user_id = ?",
+                           (product_id, current_user_id))
+            existing_status = cursor.fetchone()
+
+            if existing_status:
+                status = existing_status[0].lower()
+
+                if status == 'in progress':
+                    self._show_message(f"Test for Product ID {product_id} is already In Progress.", "Info")
+                    return
+                elif status == 'completed':
+                    self._show_message(f"Test for Product ID {product_id} is already Completed.", "Info")
+                    return
+                elif status == 'failed':
+                    self._show_message(f"Test for Product ID {product_id} has already Failed.", "Info")
+                    return
+                elif status == 'paused' or status == 'not started' or status == 'retest required':
+                    # Resume or start the test
+                    cursor.execute("""
+                        UPDATE Testing
+                        SET test_status = 'In Progress', start_time = COALESCE(start_time, ?), end_time = NULL
+                        WHERE product_id = ? AND user_id = ?
+                    """, (datetime.now().strftime('%Y-%m-%d %H:%M:%S'), product_id, current_user_id))
+                else:
+                    self._show_message(f"Unrecognized test status: {status}", "Error")
+                    return
+            else:
+                # No record found, insert a new one
+                cursor.execute("""
+                    INSERT INTO Testing (product_id, user_id, test_status, start_time)
+                    VALUES (?, ?, 'In Progress', ?)
+                """, (product_id, current_user_id, datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+
+            conn.commit()
+            self._show_message(f"Test for Product ID {product_id} started.", "Success")
+            self.switch_frame("Product Assignments")  # Refresh the display
+
+        except sqlite3.Error as e:
+            print(f"Database Error (start_test): {e}")
+            self._show_message(f"Database error: {e}", "Error")
+        finally:
+            if conn:
+                conn.close()
+
+    def pause_test(self, tree):
+        """Pauses a test if it's currently in progress."""
+        product_id = self._get_selected_product_id(tree)
+        if not product_id:
+            self._show_message("Please select a product to pause testing.", "Warning")
+            return
+
+        current_user_id = self.get_current_user_id()
+        conn = None
+        try:
+            conn = sqlite3.connect('medical_system.db')
+            cursor = conn.cursor()
+
+            cursor.execute("SELECT test_status FROM Testing WHERE product_id = ? AND user_id = ?",
+                           (product_id, current_user_id))
+            existing_status = cursor.fetchone()
+
+            if not existing_status:
+                self._show_message(f"No test found for Product ID {product_id}.", "Info")
+                return
+
+            status = existing_status[0].lower()
+            if status != 'in progress':
+                self._show_message(f"Test for Product ID {product_id} is not In Progress.", "Info")
+                return
+
+            cursor.execute("""
+                UPDATE Testing
+                SET test_status = 'Paused'
+                WHERE product_id = ? AND user_id = ?
+            """, (product_id, current_user_id))
+
+            conn.commit()
+            self._show_message(f"Test for Product ID {product_id} has been paused.", "Success")
+            self.switch_frame("Product Assignments")
+        except sqlite3.Error as e:
+            print(f"Database Error (pause_test): {e}")
+            self._show_message(f"Database error: {e}", "Error")
+        finally:
+            if conn:
+                conn.close()
+
+    def end_test(self, tree):
+        """Ends a test if it's not already completed or failed."""
+        product_id = self._get_selected_product_id(tree)
+        if not product_id:
+            self._show_message("Please select a product to end testing.", "Warning")
+            return
+
+        current_user_id = self.get_current_user_id()
+        conn = None
+        try:
+            conn = sqlite3.connect('medical_system.db')
+            cursor = conn.cursor()
+
+            cursor.execute("SELECT test_status FROM Testing WHERE product_id = ? AND user_id = ?",
+                           (product_id, current_user_id))
+            existing_status = cursor.fetchone()
+
+            if not existing_status:
+                self._show_message(f"No test found for Product ID {product_id}.", "Info")
+                return
+
+            status = existing_status[0].lower()
+            if status in ['completed', 'failed']:
+                self._show_message(f"Test for Product ID {product_id} is already {status.capitalize()}.", "Info")
+                return
+
+            cursor.execute("""
+                UPDATE Testing
+                SET test_status = 'Completed', end_time = ?
+                WHERE product_id = ? AND user_id = ?
+            """, (datetime.now().strftime('%Y-%m-%d %H:%M:%S'), product_id, current_user_id))
+
+            conn.commit()
+            self._show_message(f"Test for Product ID {product_id} has been completed.", "Success")
+            self.switch_frame("Product Assignments")
+        except sqlite3.Error as e:
+            print(f"Database Error (end_test): {e}")
+            self._show_message(f"Database error: {e}", "Error")
+        finally:
+            if conn:
+                conn.close()
+
+    def _show_message(self, message, title="Message"):
+        """
+        A simple message box replacement for alert/confirm.
+        In a real application, you'd use a custom Tkinter Toplevel window.
+        """
+        msg_box = tk.Toplevel(self.root)
+        msg_box.title(title)
+        msg_box.geometry("300x100")
+        msg_box.transient(self.root)  # Make it appear on top of the main window
+        msg_box.grab_set()  # Disable interaction with the main window
+
+        ttk.Label(msg_box, text=message, wraplength=280).pack(pady=10)
+        ttk.Button(msg_box, text="OK", command=msg_box.destroy).pack(pady=5)
+
+        self.root.wait_window(msg_box)  # Wait for the message box to close
+    def view_product_details(self, tree):
+        selection = tree.selection()
+        if not selection:
+            messagebox.showwarning("No Selection", "Please select a product to view details.")
+            return
+
+        item = tree.item(selection[0])
+        product_id = item['values'][0]
+
+        try:
+            conn = sqlite3.connect('medical_system.db')
+            cursor = conn.cursor()
+
+            cursor.execute("""
+                SELECT product_name, manufacture_date, expired_date, arrival_date,
+                       location, batch, barcode, sku, branch
+                FROM Products WHERE product_id = ?
+            """, (product_id,))
+            product = cursor.fetchone()
+
+            if product:
+                detail_win = tk.Toplevel(self)
+                detail_win.title(f"Product Details - {product[0]}")
+
+                detail_text = (
+                    f"Name: {product[0]}\n"
+                    f"Manufacture Date: {product[1]}\n"
+                    f"Expiry Date: {product[2]}\n"
+                    f"Arrival Date: {product[3]}\n"
+                    f"Location: {product[4]}\n"
+                    f"Batch: {product[5]}\n"
+                    f"Barcode: {product[6]}\n"
+                    f"SKU: {product[7]}\n"
+                    f"Branch: {product[8]}"
+                )
+                label = tk.Label(detail_win, text=detail_text, justify='left', padx=10, pady=10)
+                label.pack()
+
+            else:
+                messagebox.showinfo("No Data", "No details found for the selected product.")
+
+        except sqlite3.Error as e:
+            messagebox.showerror("Database Error", f"Error fetching product details: {e}")
+
+        finally:
+            if conn:
+                conn.close()
+
+    def attach_file(self):
+        file_path = filedialog.askopenfilename(
+            filetypes=[("Image files", "*.png;*.jpg;*.jpeg;*.bmp;*.gif"), ("All files", "*.*")]
+        )
+        if file_path:
+            self.attached_file_path = file_path
+
+            # Show the file path in the label
+            self.image_path_label.config(text=f"Attached: {file_path}")
+
+            # Load and display the image
+            image = Image.open(file_path)
+            image.thumbnail((300, 200))  # Resize to fit the frame
+            self.photo_image = ImageTk.PhotoImage(image)  # Must save to self to avoid garbage collection
+            self.image_label.config(image=self.photo_image)
+        else:
+            # Clear the image if nothing selected
+            self.attached_file_path = None
+            self.image_label.config(image='')
+            self.image_path_label.config(text="")
+
+    def update_test_status(self, product_combo, status_combo, result_text):
+        """Update test status, result, and attach image path (no memo field)."""
+        print("Database full path:", os.path.abspath('medical_system.db'))
+
+        # Validation
+        selected_product = product_combo.get()
+        if not selected_product or selected_product == "No products assigned":
+            messagebox.showerror("Error", "Please select a product")
+            return
+
+        test_status = status_combo.get()
+        if not test_status:
+            messagebox.showerror("Error", "Please select a test status")
+            return
+
+        try:
+            product_id = selected_product.split(" - ")[0].strip()
+        except IndexError:
+            messagebox.showerror("Error", "Invalid product selection")
+            return
+
+        test_result = result_text.get("1.0", "end").strip()
+        user_id = self.get_current_user_id()
+        from datetime import datetime
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        # Save image path as string if it exists
+        image_path = self.attached_file_path if hasattr(self, 'attached_file_path') else None
+
+        try:
+            with sqlite3.connect('medical_system.db', timeout=10.0) as conn:
+                cursor = conn.cursor()
+
+                # Check if test record exists
+                cursor.execute("SELECT test_id FROM Testing WHERE user_id = ? AND product_id = ?",
+                               (user_id, product_id))
+                row = cursor.fetchone()
+
+                if row:
+                    print("Updating existing test record...")
+                    cursor.execute("""
+                        UPDATE Testing
+                        SET test_status = ?, test_result = ?, test_end = ?, test_image = ?
+                        WHERE test_id = ?
+                    """, (test_status, test_result, now, image_path, row[0]))
+                else:
+                    print("Inserting new test record...")
+                    cursor.execute("""
+                        INSERT INTO Testing (user_id, product_id, test_start, test_status, test_result, test_image)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                    """, (user_id, product_id, now, test_status, test_result, image_path))
+
+                conn.commit()
+
+                # Verify the update
+                cursor.execute("SELECT * FROM Testing WHERE user_id = ? AND product_id = ?", (user_id, product_id))
+                print("Current record:", cursor.fetchone())
+
+                messagebox.showinfo("Success", "Test status updated successfully!")
+
+                # Clear form
+                product_combo.set("")
+                status_combo.set("")
+                result_text.delete("1.0", "end")
+                self.attached_file_path = None
+
+        except sqlite3.Error as e:
+            print("Database error:", e)
+            messagebox.showerror("Database Error", f"Failed to update test status: {e}")
+        except Exception as e:
+            print("Unexpected error:", e)
+            messagebox.showerror("Error", f"An unexpected error occurred: {e}")
+
+
+    def apply_date_filter(self):
+        start_date = self.start_date_entry.get_date()
+        end_date = self.end_date_entry.get_date()
+        self.load_test_schedule(self.user_id, start_date, end_date)
+
+    def load_test_schedule(self):
+        # Get selected dates
+        start_date = self.start_date_entry.get_date()
+        end_date = self.end_date_entry.get_date()
+
+        # Validate date range
+        if start_date > end_date:
+            messagebox.showerror("Date Error", "Start date must not be after end date.")
+            return
+
+        # Clear the treeview
+        for row in self.tree.get_children():
+            self.tree.delete(row)
+
+        # Connect to the database
+        conn = sqlite3.connect('medical_system.db')
+        cursor = conn.cursor()
+
+        # Fetch schedule based on selected date range
+        cursor.execute("""
+            SELECT 
+                P.product_name, 
+                T.test_status,
+                T.test_start,
+                T.test_end
+            FROM Products P
+            INNER JOIN product_tester_assignments A ON P.product_id = A.product_id
+            LEFT JOIN Testing T ON T.product_id = P.product_id AND T.user_id = A.tester_id
+            WHERE A.tester_id = ?
+              AND (
+                  date(T.test_start) BETWEEN ? AND ?
+                  OR date(T.test_end) BETWEEN ? AND ?
+              )
+            ORDER BY P.product_name
+        """, (self.user_id, start_date, end_date, start_date, end_date))
+
+        rows = cursor.fetchall()
+        conn.close()
+
+        # Insert data into the treeview
+        self.tree.tag_configure("overdue", background="lightcoral", foreground="white")
+        for product_name, status, test_start, test_end in rows:
+            overdue = False
+            if status and status in ["Not Started", "In Progress"] and test_end:
+                try:
+                    end_dt = datetime.strptime(test_end, '%Y-%m-%d %H:%M:%S')
+                    if end_dt.date() < datetime.today().date():
+                        overdue = True
+                except Exception:
+                    pass
+
+            tag = "overdue" if overdue else ""
+            self.tree.insert('', 'end', values=(product_name, status, test_start, test_end), tags=(tag,))
+
+
+    def export_history(self, tree, export_type):
+        """Export test history to Excel or PDF"""
+        try:
+            data = []
+            for item in tree.get_children():
+                data.append(tree.item(item)['values'])
+
+            if not data:
+                messagebox.showwarning("No Data", "No test history to export")
+                return
+
+            columns = [tree.heading(col)['text'] for col in tree['columns']]
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"test_history_{timestamp}"
+
+            if export_type == "excel":
+                filename += ".xlsx"
+                self.export_to_excel(columns, data, filename)
+            elif export_type == "pdf":
+                filename += ".pdf"
+                self.export_to_pdf(columns, data, filename)
+
+            messagebox.showinfo("Export Successful", f"Exported to {filename}")
+
+        except Exception as e:
+            messagebox.showerror("Export Error", f"Failed to export: {str(e)}")
+
+        if platform.system() == "Windows":
+            os.startfile(filename)
+
+    def export_to_excel(self, columns, data, filename):
+        """Export data to Excel file"""
+        df = pd.DataFrame(data, columns=columns)
+
+        with pd.ExcelWriter(filename, engine='openpyxl') as writer:
+            df.to_excel(writer, index=False, sheet_name='Sheet1')
+
+            worksheet = writer.sheets['Sheet1']
+            for i, col in enumerate(df.columns):
+                col_width = max(df[col].astype(str).map(len).max(), len(col))
+                worksheet.column_dimensions[get_column_letter(i + 1)].width = col_width + 2
+
+    def export_to_pdf(self, columns, data, filename):
+        """Export data to PDF file"""
+        pdf = FPDF()
+        pdf.add_page()
+
+        # Font fallback if Arial is unavailable (e.g., Linux)
+        if platform.system() == "Windows":
+            pdf.set_font("Arial", size=10)
+        else:
+            pdf.set_font("Helvetica", size=10)
+
+        pdf.cell(200, 10, txt="Test History Report", ln=1, align='C')
+        pdf.cell(200, 10, txt=f"Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", ln=1, align='C')
+
+        col_widths = [40, 30, 30, 30, 60]
+
+        # Header row
+        for i, col in enumerate(columns):
+            pdf.cell(col_widths[i], 10, txt=col, border=1)
+        pdf.ln()
+
+        # Content rows with multi-line support for longer text
+        for row in data:
+            max_lines = 1
+            wrapped_row = []
+            for i, item in enumerate(row):
+                text = str(item)
+                # Determine how many lines it will take
+                lines = len(pdf.multi_cell(col_widths[i], 10, text, border=0, split_only=True))
+                wrapped_row.append(text)
+                max_lines = max(max_lines, lines)
+
+            for line in range(max_lines):
+                for i, text in enumerate(wrapped_row):
+                    lines = pdf.multi_cell(col_widths[i], 10, text, border=0, split_only=True)
+                    line_text = lines[line] if line < len(lines) else ""
+                    pdf.cell(col_widths[i], 10, txt=line_text, border=1)
+                pdf.ln()
+
+        pdf.output(filename)
+
+
+    def insert_expiry_reminders(self, user_id):
+        today = date.today()
+        upcoming = today + timedelta(days=2)
+
+        try:
+            conn = sqlite3.connect("medical_system.db")
+            cursor = conn.cursor()
+
+            cursor.execute("""
+                SELECT ap.product_id, ap.expiry_date, p.product_name
+                FROM AssignedProducts ap
+                JOIN Products p ON ap.product_id = p.product_id
+                WHERE ap.tester_id = ? AND DATE(ap.expiry_date) BETWEEN DATE(?) AND DATE(?)
+            """, (user_id, today, upcoming))
+
+            rows = cursor.fetchall()
+
+            for product_id, expiry_date, product_name in rows:
+                # Prevent duplicate reminders
+                cursor.execute("""
+                    SELECT 1 FROM Notifications
+                    WHERE user_id = ? AND message LIKE ? AND DATE(timestamp) = DATE(?)
+                """, (user_id, f"%{product_name}%expires%", today))
+                exists = cursor.fetchone()
+
+                if not exists:
+                    message = f"Reminder: Product '{product_name}' (ID: {product_id}) expires on {expiry_date}. Please test it soon."
+                    cursor.execute("""
+                        INSERT INTO Notifications (user_id, message, timestamp, read)
+                        VALUES (?, ?, ?, 0)
+                    """, (user_id, message, datetime.now()))
+
+            conn.commit()
+
+        except sqlite3.Error as e:
+            print("Reminder insertion failed:", e)
+
+        finally:
+            if conn:
+                conn.close()
+
+
+if __name__ == '__main__':
+    app = TesterHomePage()
+    app.mainloop()
