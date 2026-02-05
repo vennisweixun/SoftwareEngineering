@@ -1,0 +1,403 @@
+import sqlite3
+import os
+import time
+from typing import Optional, List, Dict, Any
+
+def close_all_connections():
+    """Close any existing database connections and clear locks"""
+    try:
+        # Force garbage collection to close any lingering connections
+        import gc
+        gc.collect()
+        
+        # Small delay to allow cleanup
+        time.sleep(0.1)
+        
+        print("Cleared any existing database connections...")
+    except Exception as e:
+        print(f"Note: {e}")
+
+def create_database():
+    """Create the testing system database with all required tables"""
+    conn = None
+    try:
+        conn = sqlite3.connect("testing_system.db", timeout=10.0)
+        cursor = conn.cursor()
+        
+        # Enable foreign keys
+        cursor.execute("PRAGMA foreign_keys = ON")
+        
+        # Create roles table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS roles (
+                role_id INTEGER PRIMARY KEY,
+                role_name TEXT
+            )
+        """)
+        
+        # Create branches table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS branches (
+                branch_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                branch_name TEXT
+            )
+        """)
+        
+        # Create racklocations table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS racklocations (
+                rack_location_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                rack_location_name TEXT
+            )
+        """)
+        
+        # Create assignment_status table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS assignment_status (
+                status_id INTEGER PRIMARY KEY,
+                status_name TEXT
+            )
+        """)
+        
+        # Create progress_status table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS progress_status (
+                status_id INTEGER PRIMARY KEY,
+                status_name TEXT
+            )
+        """)
+        
+        # Create test_results table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS test_results (
+                result_id INTEGER PRIMARY KEY,
+                result_name TEXT
+            )
+        """)
+        
+        # Create users table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                user_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT,
+                password INTEGER CHECK (LENGTH(password) >= 4),
+                role INTEGER,
+                fullname TEXT,
+                email TEXT,
+                phone_no TEXT,
+                branch_id INTEGER,
+                FOREIGN KEY (role) REFERENCES roles(role_id),
+                FOREIGN KEY (branch_id) REFERENCES branches(branch_id)
+            )
+        """)
+        
+        # Create products table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS products (
+                product_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                product_name TEXT,
+                product_image TEXT,
+                arrival_date DATETIME,
+                branch_id INTEGER,
+                batch TEXT,
+                rack_location_id INTEGER,
+                sku INTEGER CHECK (sku > 0),
+                manufacture_date DATETIME,
+                expired_date DATETIME,
+                barcode TEXT,
+                barcode_image TEXT,
+                excel_name TEXT,
+                FOREIGN KEY (user_id) REFERENCES users(user_id),
+                FOREIGN KEY (branch_id) REFERENCES branches(branch_id),
+                FOREIGN KEY (rack_location_id) REFERENCES racklocations(rack_location_id)
+            )
+        """)
+        
+        # Create testing table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS testing (
+                test_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                product_id INTEGER,
+                assignment_status_id INTEGER,
+                test_start DATETIME,
+                test_end DATETIME,
+                progress_status_id INTEGER,
+                test_result_id INTEGER,
+                test_image TEXT,
+                FOREIGN KEY (user_id) REFERENCES users(user_id),
+                FOREIGN KEY (product_id) REFERENCES products(product_id),
+                FOREIGN KEY (assignment_status_id) REFERENCES assignment_status(status_id),
+                FOREIGN KEY (progress_status_id) REFERENCES progress_status(status_id),
+                FOREIGN KEY (test_result_id) REFERENCES test_results(result_id)
+            )
+        """)
+        
+        # Create product_update table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS product_update (
+                update_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                product_id INTEGER,
+                product_name TEXT,
+                manufacture_date DATETIME,
+                expired_date DATETIME,
+                arrival_date DATETIME,
+                rack_location_id INTEGER,
+                batch TEXT,
+                update_date DATETIME,
+                changed_fields TEXT,
+                FOREIGN KEY (user_id) REFERENCES users(user_id),
+                FOREIGN KEY (product_id) REFERENCES products(product_id),
+                FOREIGN KEY (rack_location_id) REFERENCES racklocations(rack_location_id)
+            )
+        """)
+        
+        # Create message table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS message (
+                message_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                role_id INTEGER,
+                username TEXT,
+                role TEXT,
+                message TEXT,
+                message_type TEXT,
+                read_status INTEGER DEFAULT 0,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(user_id),
+                FOREIGN KEY (role_id) REFERENCES roles(role_id)
+            )
+        """)
+        
+        # Create product_tester_assignments table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS product_tester_assignments (
+                assignment_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                product_id INTEGER,
+                tester_id INTEGER,
+                assigned_by INTEGER,
+                assigned_date DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (product_id) REFERENCES products(product_id),
+                FOREIGN KEY (tester_id) REFERENCES users(user_id),
+                FOREIGN KEY (assigned_by) REFERENCES users(user_id)
+            )
+        """)
+        
+        conn.commit()
+        return conn, cursor
+        
+    except sqlite3.OperationalError as e:
+        if "database is locked" in str(e):
+            print("Database is locked. Attempting to resolve...")
+            if conn:
+                conn.close()
+            close_all_connections()
+            # Retry once after clearing connections
+            time.sleep(1)
+            conn = sqlite3.connect("testing_system.db", timeout=30.0)
+            cursor = conn.cursor()
+            return conn, cursor
+        else:
+            raise e
+
+def insert_lookup_data(cursor):
+    """Insert lookup data for status tables and roles"""
+    
+    # Insert roles (as specified by user)
+    roles = [
+        (1, 'superadmin'),
+        (2, 'admin'),
+        (3, 'owner'),
+        (4, 'tester')
+    ]
+    cursor.executemany("INSERT OR IGNORE INTO roles (role_id, role_name) VALUES (?, ?)", roles)
+    
+    # Insert assignment status (as specified by user)
+    assignment_statuses = [
+        (0, 'Pending'),
+        (1, 'Assigned'),
+        (2, 'Cancelled')
+    ]
+    cursor.executemany("INSERT OR IGNORE INTO assignment_status (status_id, status_name) VALUES (?, ?)", assignment_statuses)
+    
+    # Insert progress status (as specified by user)
+    progress_statuses = [
+        (0, 'On Hold'),
+        (1, 'In Progress'),
+        (2, 'Testing Complete'),
+        (3, 'Sample Expired')
+    ]
+    cursor.executemany("INSERT OR IGNORE INTO progress_status (status_id, status_name) VALUES (?, ?)", progress_statuses)
+    
+    # Insert test results (as specified by user)
+    test_results = [
+        (0, 'Rejected'),
+        (1, 'Under Review'),
+        (2, 'Approved')
+    ]
+    cursor.executemany("INSERT OR IGNORE INTO test_results (result_id, result_name) VALUES (?, ?)", test_results)
+
+# Database query functions
+def verify_user_login(cursor, username: str, password: int) -> Optional[Dict[str, Any]]:
+    """Verify user login credentials"""
+    cursor.execute("""
+        SELECT u.user_id, u.username, r.role_name, u.email, u.phone_no, 
+               b.branch_name, u.branch_id, r.role_id, u.fullname
+        FROM users u
+        LEFT JOIN roles r ON u.role = r.role_id
+        LEFT JOIN branches b ON u.branch_id = b.branch_id
+        WHERE u.username = ? AND u.password = ?
+    """, (username, password))
+    
+    result = cursor.fetchone()
+    if result:
+        return {
+            'user_id': result[0],
+            'username': result[1],
+            'role_name': result[2],
+            'email': result[3],
+            'phone_no': result[4],
+            'branch_name': result[5],
+            'branch_id': result[6],
+            'role_id': result[7],
+            'fullname': result[8]
+        }
+    return None
+
+def get_all_products(cursor, branch_id: Optional[int] = None) -> List[tuple]:
+    """Get all products, optionally filtered by branch"""
+    if branch_id:
+        cursor.execute("""
+            SELECT p.product_id, p.product_name, p.batch, p.sku, p.arrival_date,
+                   p.manufacture_date, p.expired_date, r.rack_location_name,
+                   b.branch_name, u.username as owner
+            FROM products p
+            LEFT JOIN racklocations r ON p.rack_location_id = r.rack_location_id
+            LEFT JOIN branches b ON p.branch_id = b.branch_id
+            LEFT JOIN users u ON p.user_id = u.user_id
+            WHERE p.branch_id = ?
+            ORDER BY p.arrival_date DESC
+        """, (branch_id,))
+    else:
+        cursor.execute("""
+            SELECT p.product_id, p.product_name, p.batch, p.sku, p.arrival_date,
+                   p.manufacture_date, p.expired_date, r.rack_location_name,
+                   b.branch_name, u.username as owner
+            FROM products p
+            LEFT JOIN racklocations r ON p.rack_location_id = r.rack_location_id
+            LEFT JOIN branches b ON p.branch_id = b.branch_id
+            LEFT JOIN users u ON p.user_id = u.user_id
+            ORDER BY p.arrival_date DESC
+        """)
+    return cursor.fetchall()
+
+def get_testing_status_summary(cursor) -> Dict[str, int]:
+    """Get summary of testing statuses"""
+    cursor.execute("""
+        SELECT ps.status_name, COUNT(*) as count
+        FROM testing t
+        LEFT JOIN progress_status ps ON t.progress_status_id = ps.status_id
+        GROUP BY ps.status_name
+    """)
+    results = cursor.fetchall()
+    return {status: count for status, count in results if status}
+
+def get_user_assignments(cursor, user_id: int) -> List[tuple]:
+    """Get product assignments for a specific user"""
+    cursor.execute("""
+        SELECT p.product_name, p.batch, p.sku, pta.assigned_date,
+               ps.status_name as progress_status, tr.result_name as test_result
+        FROM product_tester_assignments pta
+        JOIN products p ON pta.product_id = p.product_id
+        LEFT JOIN testing t ON p.product_id = t.product_id AND t.user_id = pta.tester_id
+        LEFT JOIN progress_status ps ON t.progress_status_id = ps.status_id
+        LEFT JOIN test_results tr ON t.test_result_id = tr.result_id
+        WHERE pta.tester_id = ?
+        ORDER BY pta.assigned_date DESC
+    """, (user_id,))
+    return cursor.fetchall()
+
+def get_messages_for_user(cursor, user_id: int, unread_only: bool = False) -> List[tuple]:
+    """Get messages for a specific user"""
+    if unread_only:
+        cursor.execute("""
+            SELECT message_id, username, message, message_type, timestamp
+            FROM message
+            WHERE user_id = ? AND read_status = 0
+            ORDER BY timestamp DESC
+        """, (user_id,))
+    else:
+        cursor.execute("""
+            SELECT message_id, username, message, message_type, timestamp, read_status
+            FROM message
+            WHERE user_id = ? OR user_id IS NULL
+            ORDER BY timestamp DESC
+        """, (user_id,))
+    return cursor.fetchall()
+
+def mark_message_as_read(cursor, message_id: int):
+    """Mark a message as read"""
+    cursor.execute("UPDATE message SET read_status = 1 WHERE message_id = ?", (message_id,))
+
+def force_unlock_database():
+    """Force unlock database by removing lock files and clearing connections"""
+    close_all_connections()
+    
+    # Remove any SQLite lock files if they exist
+    lock_files = ["testing_system.db-wal", "testing_system.db-shm"]
+    for lock_file in lock_files:
+        if os.path.exists(lock_file):
+            try:
+                os.remove(lock_file)
+                print(f"Removed lock file: {lock_file}")
+            except OSError as e:
+                print(f"Could not remove {lock_file}: {e}")
+    
+    print("Database unlock attempt completed.")
+
+def initialize_database():
+    """Initialize the complete database with essential lookup data only"""
+    print("Creating testing system database...")
+    
+    # Clear any existing connections first
+    close_all_connections()
+    
+    conn = None
+    try:
+        conn, cursor = create_database()
+        
+        print("Inserting essential lookup data...")
+        insert_lookup_data(cursor)
+        
+        conn.commit()
+        print("\n" + "="*50)
+        print("DATABASE SETUP COMPLETED SUCCESSFULLY!")
+        print("="*50)
+        print("\nDatabase: testing_system.db")
+        print("\nDatabase contains only essential lookup data:")
+        print("-" * 45)
+        print("✓ Roles: 1=superadmin, 2=admin, 3=owner, 4=tester")
+        print("✓ Assignment Status: 0=Pending, 1=Assigned, 2=Cancelled")
+        print("✓ Progress Status: 0=On Hold, 1=In Progress, 2=Testing Complete, 3=Sample Expired")
+        print("✓ Test Results: 0=Rejected, 1=Under Review, 2=Approved")
+        print("\n⚠️  No sample records included.")
+        print("   Add users and data through your application interface.")
+        
+    except sqlite3.OperationalError as e:
+        if "database is locked" in str(e):
+            print(f"Database lock error: {e}")
+            print("Attempting to force unlock...")
+            force_unlock_database()
+            print("Please try running the script again in a few seconds.")
+        else:
+            print(f"Database error: {e}")
+    except Exception as e:
+        print(f"Unexpected error: {e}")
+    finally:
+        if conn:
+            conn.close()
+
+if __name__ == "__main__":
+    initialize_database() 
